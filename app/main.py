@@ -67,9 +67,9 @@ app.include_router(teams_router, prefix=f"{API_PREFIX}/bot", tags=["Teams Bot"])
 from app.adapters.freshchat.routes import router as freshchat_router
 app.include_router(freshchat_router, prefix=f"{API_PREFIX}/webhook/freshchat", tags=["Freshchat"])
 
-# Zendesk Webhook (Phase 2)
-# from app.adapters.zendesk.routes import router as zendesk_router
-# app.include_router(zendesk_router, prefix=f"{API_PREFIX}/webhook/zendesk", tags=["Zendesk"])
+# Zendesk Webhook
+from app.adapters.zendesk.routes import router as zendesk_router
+app.include_router(zendesk_router, prefix=f"{API_PREFIX}/webhook/zendesk", tags=["Zendesk"])
 
 
 # ===== 에러 핸들러 =====

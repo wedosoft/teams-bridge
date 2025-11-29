@@ -1,22 +1,22 @@
 """메시지 라우터 (Orchestrator)
 
-Express poc-bridge.js의 handleTeamsMessage, handleFreshchatWebhook 포팅
+멀티테넌트 지원 메시지 라우터
+- Teams → Helpdesk (Freshchat/Zendesk)
+- Helpdesk → Teams
+
 주요 기능:
-- Teams → Freshchat 메시지/파일 중계
-- Freshchat → Teams 메시지/파일 중계
+- 테넌트별 플랫폼 라우팅
 - 대화 생성 및 매핑 관리
-- Greeting 메시지 처리
 - 첨부파일 양방향 전송
 """
 from typing import Any, Optional
-import asyncio
 
 from botbuilder.core import TurnContext
 from botbuilder.schema import Attachment as BotAttachment
 
-from app.adapters.freshchat.client import FreshchatClient
 from app.adapters.freshchat.webhook import ParsedMessage, ParsedAttachment, WebhookEvent
-from app.config import get_settings
+from app.core.tenant import TenantConfig, Platform, get_tenant_service
+from app.core.platform_factory import get_platform_factory, HelpdeskClient
 from app.core.store import (
     ConversationStore,
     ConversationMapping,
@@ -35,43 +35,30 @@ logger = get_logger(__name__)
 
 
 class MessageRouter:
-    """메시지 라우터 - Teams와 헬프데스크 플랫폼 간 메시지 중계
+    """메시지 라우터 - 멀티테넌트 메시지 중계
 
-    Express poc-bridge.js의 handleTeamsMessage, handleFreshchatWebhook 기능 통합
+    Teams 메시지 수신 → 테넌트 설정 조회 → 해당 플랫폼으로 전달
     """
 
     def __init__(self):
-        self._settings = get_settings()
         self._store: Optional[ConversationStore] = None
-        self._freshchat: Optional[FreshchatClient] = None
         self._bot: Optional[TeamsBot] = None
 
     @property
     def store(self) -> ConversationStore:
-        """대화 매핑 스토어 (지연 초기화)"""
+        """대화 매핑 스토어"""
         if self._store is None:
             self._store = get_conversation_store()
         return self._store
 
     @property
-    def freshchat(self) -> FreshchatClient:
-        """Freshchat 클라이언트 (지연 초기화)"""
-        if self._freshchat is None:
-            self._freshchat = FreshchatClient(
-                api_key=self._settings.freshchat_api_key,
-                api_url=self._settings.freshchat_api_url,
-                inbox_id=self._settings.freshchat_inbox_id,
-            )
-        return self._freshchat
-
-    @property
     def bot(self) -> TeamsBot:
-        """Teams Bot (지연 초기화)"""
+        """Teams Bot"""
         if self._bot is None:
             self._bot = get_teams_bot()
         return self._bot
 
-    # ===== Teams → Freshchat =====
+    # ===== Teams → Helpdesk =====
 
     async def handle_teams_message(
         self,
@@ -81,39 +68,66 @@ class MessageRouter:
         """
         Teams에서 받은 메시지 처리
 
-        Express poc-bridge.js의 handleTeamsMessage 포팅
-
         Flow:
-        1. 기존 대화 매핑 조회 (Teams ID → Freshchat ID)
-        2. 없으면: Freshchat 사용자 생성 → 대화 생성 → 매핑 저장
-        3. 있으면: 기존 대화에 메시지/첨부파일 전송
-        4. 대화가 종료된 경우: 새 대화 자동 생성
-
-        Args:
-            context: TurnContext
-            message: TeamsMessage (파싱된 메시지)
+        1. 테넌트 설정 조회
+        2. 미등록 테넌트 → 설정 안내 메시지
+        3. 기존 대화 매핑 확인
+        4. 없으면 → 새 대화 생성
+        5. 있으면 → 기존 대화에 메시지 전송
         """
         teams_conversation_id = message.conversation_id
-        teams_user_id = message.user.id if message.user else ""
+        teams_tenant_id = message.user.tenant_id if message.user else None
         conversation_reference = message.conversation_reference or {}
 
         logger.info(
             "Processing Teams message",
             teams_conversation_id=teams_conversation_id,
-            teams_user_id=teams_user_id,
+            teams_tenant_id=teams_tenant_id,
             has_text=bool(message.text),
             attachment_count=len(message.attachments),
         )
 
-        try:
-            # 1. 기존 대화 매핑 확인
-            mapping = await self.store.get_by_teams_id(teams_conversation_id, "freshchat")
+        # 1. 테넌트 설정 조회
+        if not teams_tenant_id:
+            logger.error("Missing tenant_id in message")
+            await context.send_activity(
+                "테넌트 정보를 확인할 수 없습니다. 관리자에게 문의해 주세요."
+            )
+            return
 
-            # 2. 매핑이 없거나 종료된 경우 → 새 대화 생성
+        tenant_service = get_tenant_service()
+        tenant = await tenant_service.get_tenant(teams_tenant_id)
+
+        # 2. 미등록 테넌트 처리
+        if not tenant:
+            logger.info("Unregistered tenant", teams_tenant_id=teams_tenant_id)
+            await self._send_setup_required_message(context)
+            return
+
+        # 3. 플랫폼 클라이언트 가져오기
+        factory = get_platform_factory()
+        client = factory.get_client(tenant)
+
+        if not client:
+            logger.error("Failed to get platform client", platform=tenant.platform)
+            await context.send_activity(
+                "헬프데스크 연결에 실패했습니다. 설정을 확인해 주세요."
+            )
+            return
+
+        try:
+            # 4. 기존 대화 매핑 확인
+            mapping = await self.store.get_by_teams_id(
+                teams_conversation_id, tenant.platform.value
+            )
+
+            # 5. 매핑이 없거나 종료된 경우 → 새 대화 생성
             if not mapping or mapping.is_resolved:
                 mapping = await self._create_new_conversation(
                     context=context,
                     message=message,
+                    tenant=tenant,
+                    client=client,
                     conversation_reference=conversation_reference,
                 )
                 if not mapping:
@@ -124,32 +138,35 @@ class MessageRouter:
 
                 # Greeting 메시지 (새 대화 시에만)
                 if not mapping.greeting_sent:
-                    await context.send_activity(
-                        "안녕하세요! IT 헬프데스크입니다. 상담원이 곧 연결됩니다. 🙂"
-                    )
+                    welcome_msg = tenant.welcome_message or "안녕하세요! 상담원이 곧 연결됩니다. 🙂"
+                    await context.send_activity(welcome_msg)
                     mapping.greeting_sent = True
                     await self.store.upsert(mapping)
 
             else:
-                # 3. 기존 대화에 메시지 전송 시도
-                success = await self._send_to_freshchat(
+                # 6. 기존 대화에 메시지 전송
+                success = await self._send_to_helpdesk(
                     context=context,
                     message=message,
+                    tenant=tenant,
+                    client=client,
                     mapping=mapping,
                 )
 
                 if not success:
-                    # 대화가 종료되었거나 전송 실패 → 새 대화 생성
+                    # 전송 실패 → 새 대화 생성
                     logger.info("Message send failed, creating new conversation")
                     await self.store.mark_resolved(
                         mapping.platform_conversation_id or "",
-                        "freshchat",
+                        tenant.platform.value,
                         True,
                     )
 
                     mapping = await self._create_new_conversation(
                         context=context,
                         message=message,
+                        tenant=tenant,
+                        client=client,
                         conversation_reference=conversation_reference,
                     )
 
@@ -163,11 +180,11 @@ class MessageRouter:
                         "이전 상담이 종료되어 새로운 상담이 시작되었습니다. 🙂"
                     )
 
-            # ConversationReference 업데이트 (항상)
+            # ConversationReference 업데이트
             if conversation_reference:
                 await self.store.update_conversation_reference(
                     teams_conversation_id,
-                    "freshchat",
+                    tenant.platform.value,
                     conversation_reference,
                 )
 
@@ -181,58 +198,56 @@ class MessageRouter:
                 "죄송합니다. 메시지 처리 중 오류가 발생했습니다."
             )
 
+    async def _send_setup_required_message(self, context: TurnContext) -> None:
+        """설정 필요 안내 메시지"""
+        message = (
+            "🔧 **헬프데스크 설정이 필요합니다**\n\n"
+            "IT 관리자가 아직 헬프데스크를 설정하지 않았습니다.\n\n"
+            "관리자에게 Teams 관리 센터에서 앱 설정을 완료해 달라고 요청해 주세요."
+        )
+        await context.send_activity(message)
+
     async def _create_new_conversation(
         self,
         context: TurnContext,
         message: TeamsMessage,
+        tenant: TenantConfig,
+        client: HelpdeskClient,
         conversation_reference: dict,
     ) -> Optional[ConversationMapping]:
-        """
-        새 Freshchat 대화 생성
-
-        1. Freshchat 사용자 생성/조회
-        2. 대화 생성 (초기 메시지 포함)
-        3. 매핑 저장
-        """
+        """새 대화 생성"""
         user = message.user
         if not user:
             logger.error("No user info in message")
             return None
 
-        # 사용자 프로필 구성
+        # 사용자 프로필
         properties = {}
         if user.tenant_id:
             properties["tenant_id"] = user.tenant_id
 
-        # 1. Freshchat 사용자 생성/조회
-        freshchat_user_id = await self.freshchat.get_or_create_user(
+        # 1. 플랫폼 사용자 생성/조회
+        platform_user_id = await client.get_or_create_user(
             reference_id=user.id,
             name=user.name,
             email=user.email,
             properties=properties if properties else None,
         )
 
-        if not freshchat_user_id:
-            logger.error("Failed to create Freshchat user")
+        if not platform_user_id:
+            logger.error("Failed to create platform user")
             return None
 
-        # Teams 대화 ID를 사용자 프로필에 저장 (복구용)
-        await self.freshchat.update_user_teams_conversation(
-            user_id=freshchat_user_id,
-            teams_conversation_id=message.conversation_id,
-        )
-
-        # 2. 첫 번째 메시지 구성
+        # 2. 첨부파일 처리
         message_text = message.text
         attachments = []
 
-        # 첨부파일 처리
         if message.attachments:
             for att in message.attachments:
                 downloaded = await self.bot.download_attachment(context, att)
                 if downloaded:
                     file_buffer, content_type, filename = downloaded
-                    uploaded = await self.freshchat.upload_file(
+                    uploaded = await client.upload_file(
                         file_buffer=file_buffer,
                         filename=filename,
                         content_type=content_type,
@@ -240,25 +255,24 @@ class MessageRouter:
                     if uploaded:
                         attachments.append(uploaded)
 
-        # 3. 대화 생성 (초기 메시지 포함)
-        result = await self.freshchat.create_conversation(
-            user_id=freshchat_user_id,
+        # 3. 대화 생성
+        result = await client.create_conversation(
+            user_id=platform_user_id,
             message_text=message_text,
             attachments=attachments if attachments else None,
         )
 
         if not result:
-            logger.error("Failed to create Freshchat conversation")
+            logger.error("Failed to create conversation")
             return None
 
         conversation_id = result.get("conversation_id", "")
         numeric_id = str(result.get("id", "")) if result.get("id") else None
 
         logger.info(
-            "Created new Freshchat conversation",
+            "Created new conversation",
+            platform=tenant.platform.value,
             conversation_id=conversation_id,
-            numeric_id=numeric_id,
-            freshchat_user_id=freshchat_user_id,
         )
 
         # 4. 매핑 저장
@@ -266,45 +280,31 @@ class MessageRouter:
             teams_conversation_id=message.conversation_id,
             teams_user_id=user.id,
             conversation_reference=conversation_reference,
-            platform="freshchat",
+            platform=tenant.platform.value,
             platform_conversation_id=conversation_id,
             platform_conversation_numeric_id=numeric_id,
-            platform_user_id=freshchat_user_id,
+            platform_user_id=platform_user_id,
             is_resolved=False,
             greeting_sent=False,
             tenant_id=user.tenant_id,
         )
 
-        saved = await self.store.upsert(mapping)
-        return saved
+        return await self.store.upsert(mapping)
 
-    async def _send_to_freshchat(
+    async def _send_to_helpdesk(
         self,
         context: TurnContext,
         message: TeamsMessage,
+        tenant: TenantConfig,
+        client: HelpdeskClient,
         mapping: ConversationMapping,
     ) -> bool:
-        """
-        기존 Freshchat 대화에 메시지/첨부파일 전송
-
-        Returns:
-            성공 여부
-        """
-        conversation_ids = []
-        if mapping.platform_conversation_id:
-            conversation_ids.append(mapping.platform_conversation_id)
-        if mapping.platform_conversation_numeric_id:
-            conversation_ids.append(mapping.platform_conversation_numeric_id)
-
-        if not conversation_ids:
-            return False
-
+        """기존 대화에 메시지 전송"""
+        conversation_id = mapping.platform_conversation_id
         user_id = mapping.platform_user_id
-        if not user_id:
-            return False
 
-        # 메시지 텍스트
-        message_text = message.text
+        if not conversation_id or not user_id:
+            return False
 
         # 첨부파일 처리
         attachments = []
@@ -313,7 +313,7 @@ class MessageRouter:
                 downloaded = await self.bot.download_attachment(context, att)
                 if downloaded:
                     file_buffer, content_type, filename = downloaded
-                    uploaded = await self.freshchat.upload_file(
+                    uploaded = await client.upload_file(
                         file_buffer=file_buffer,
                         filename=filename,
                         content_type=content_type,
@@ -321,54 +321,43 @@ class MessageRouter:
                     if uploaded:
                         attachments.append(uploaded)
 
-        # 사용자 이름
-        user_name = message.user.name if message.user else None
-
-        # 메시지 전송 (fallback 포함)
-        result = await self.freshchat.send_message_with_fallback(
-            conversation_ids=conversation_ids,
+        # 메시지 전송
+        return await client.send_message(
+            conversation_id=conversation_id,
             user_id=user_id,
-            message_text=message_text,
+            message_text=message.text,
             attachments=attachments if attachments else None,
-            user_name=user_name,
         )
 
-        return result.get("success", False)
+    # ===== Helpdesk → Teams =====
 
-    # ===== Freshchat → Teams =====
-
-    async def handle_freshchat_webhook(
+    async def handle_webhook(
         self,
+        tenant: TenantConfig,
         event: WebhookEvent,
     ) -> None:
         """
-        Freshchat 웹훅 이벤트 처리
-
-        Express poc-bridge.js의 handleFreshchatWebhook 포팅
-
-        Flow:
-        1. 대화 매핑 조회 (Freshchat ID → Teams ID)
-        2. conversation_resolution: 종료 메시지 전송 + 매핑 업데이트
-        3. message_create: Teams로 메시지/첨부파일 전송
+        헬프데스크 웹훅 이벤트 처리
 
         Args:
-            event: WebhookEvent (파싱된 웹훅 이벤트)
+            tenant: 테넌트 설정
+            event: 파싱된 웹훅 이벤트
         """
-        # 대화 ID 확인
         conversation_id = event.conversation_id or event.conversation_numeric_id
         if not conversation_id:
             logger.warning("No conversation ID in webhook event")
             return
 
         logger.info(
-            "Processing Freshchat webhook",
+            "Processing webhook",
+            platform=tenant.platform.value,
             action=event.action,
             conversation_id=conversation_id,
         )
 
         try:
-            # 1. 대화 매핑 조회
-            mapping = await self._find_mapping(event)
+            # 대화 매핑 조회
+            mapping = await self._find_mapping(event, tenant.platform.value)
             if not mapping:
                 logger.warning(
                     "No conversation mapping found",
@@ -376,52 +365,52 @@ class MessageRouter:
                 )
                 return
 
-            # 2. 대화 종료 이벤트
+            # 대화 종료 이벤트
             if event.action == "conversation_resolution":
-                await self._handle_resolution(mapping)
+                await self._handle_resolution(mapping, tenant)
                 return
 
-            # 3. 메시지 이벤트
+            # 메시지 이벤트
             if event.action == "message_create" and event.message:
-                await self._send_to_teams(event, mapping)
+                await self._send_to_teams(event, mapping, tenant)
 
         except Exception as e:
             logger.error(
-                "Failed to process Freshchat webhook",
+                "Failed to process webhook",
                 error=str(e),
                 conversation_id=conversation_id,
             )
 
-    async def _find_mapping(self, event: WebhookEvent) -> Optional[ConversationMapping]:
-        """대화 매핑 조회 (여러 ID 시도)"""
-        # GUID로 조회
+    async def _find_mapping(
+        self, event: WebhookEvent, platform: str
+    ) -> Optional[ConversationMapping]:
+        """대화 매핑 조회"""
         if event.conversation_id:
             mapping = await self.store.get_by_platform_id(
-                event.conversation_id, "freshchat"
+                event.conversation_id, platform
             )
             if mapping:
                 return mapping
 
-        # Numeric ID로 조회
         if event.conversation_numeric_id:
             mapping = await self.store.get_by_platform_id(
-                event.conversation_numeric_id, "freshchat"
+                event.conversation_numeric_id, platform
             )
             if mapping:
                 return mapping
 
         return None
 
-    async def _handle_resolution(self, mapping: ConversationMapping) -> None:
+    async def _handle_resolution(
+        self, mapping: ConversationMapping, tenant: TenantConfig
+    ) -> None:
         """대화 종료 처리"""
-        # 매핑 업데이트
         await self.store.mark_resolved(
             mapping.platform_conversation_id or "",
-            "freshchat",
+            tenant.platform.value,
             True,
         )
 
-        # Teams에 종료 메시지 전송
         if mapping.conversation_reference:
             await self.bot.send_proactive_message(
                 conversation_reference=mapping.conversation_reference,
@@ -431,17 +420,17 @@ class MessageRouter:
         logger.info(
             "Conversation resolved",
             teams_conversation_id=mapping.teams_conversation_id,
-            platform_conversation_id=mapping.platform_conversation_id,
         )
 
     async def _send_to_teams(
         self,
         event: WebhookEvent,
         mapping: ConversationMapping,
+        tenant: TenantConfig,
     ) -> None:
-        """Freshchat 메시지를 Teams로 전송"""
+        """헬프데스크 메시지를 Teams로 전송"""
         if not mapping.conversation_reference:
-            logger.error("No conversation reference for Teams")
+            logger.error("No conversation reference")
             return
 
         message = event.message
@@ -451,7 +440,10 @@ class MessageRouter:
         # 상담원 이름 조회
         agent_name = None
         if message.actor_type == "agent" and message.actor_id:
-            agent_name = await self.freshchat.get_agent_name(message.actor_id)
+            factory = get_platform_factory()
+            client = factory.get_client(tenant)
+            if client:
+                agent_name = await client.get_agent_name(message.actor_id)
 
         # 텍스트 메시지
         if message.text:
@@ -473,8 +465,6 @@ class MessageRouter:
             "Sent message to Teams",
             teams_conversation_id=mapping.teams_conversation_id,
             actor_type=message.actor_type,
-            has_text=bool(message.text),
-            attachment_count=len(message.attachments),
         )
 
     async def _send_attachments_to_teams(
@@ -483,14 +473,11 @@ class MessageRouter:
         mapping: ConversationMapping,
         agent_name: Optional[str] = None,
     ) -> None:
-        """Freshchat 첨부파일을 Teams로 전송"""
+        """첨부파일을 Teams로 전송"""
         for att in attachments:
-            # URL이 없으면 스킵
             if not att.url:
-                logger.warning("Attachment has no URL", name=att.name)
                 continue
 
-            # 이미지: 마크다운으로 전송
             if att.type == "image":
                 image_text = f"![{att.name or 'image'}]({att.url})"
                 await self.bot.send_proactive_message(
@@ -498,8 +485,6 @@ class MessageRouter:
                     text=image_text,
                     sender_name=agent_name,
                 )
-
-            # 파일/비디오: Adaptive Card로 전송
             else:
                 card = build_file_card(
                     filename=att.name or "file",
@@ -513,13 +498,13 @@ class MessageRouter:
                 )
 
 
-# ===== 싱글톤 인스턴스 =====
+# ===== 싱글톤 =====
 
 _router_instance: Optional[MessageRouter] = None
 
 
 def get_message_router() -> MessageRouter:
-    """MessageRouter 싱글톤 인스턴스 반환"""
+    """MessageRouter 싱글톤"""
     global _router_instance
     if _router_instance is None:
         _router_instance = MessageRouter()

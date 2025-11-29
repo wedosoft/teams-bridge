@@ -1,3 +1,5 @@
-"""Zendesk 어댑터 (Phase 2)"""
-# from app.adapters.zendesk.adapter import ZendeskAdapter
-# __all__ = ["ZendeskAdapter"]
+"""Zendesk 어댑터"""
+from app.adapters.zendesk.client import ZendeskClient
+from app.adapters.zendesk.webhook import ZendeskWebhookHandler
+
+__all__ = ["ZendeskClient", "ZendeskWebhookHandler"]

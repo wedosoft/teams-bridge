@@ -103,3 +103,24 @@ class Database:
             .execute()
         )
         return result.data
+
+    async def upsert_tenant(self, data: dict) -> dict:
+        """테넌트 생성/업데이트"""
+        result = (
+            self.client.table("tenants")
+            .upsert(data, on_conflict="teams_tenant_id")
+            .execute()
+        )
+        return result.data[0] if result.data else {}
+
+    async def update_tenant(self, teams_tenant_id: str, data: dict) -> None:
+        """테넌트 업데이트"""
+        self.client.table("tenants").update(data).eq(
+            "teams_tenant_id", teams_tenant_id
+        ).execute()
+
+    async def delete_tenant(self, teams_tenant_id: str) -> None:
+        """테넌트 삭제"""
+        self.client.table("tenants").delete().eq(
+            "teams_tenant_id", teams_tenant_id
+        ).execute()
