@@ -55,6 +55,26 @@ def get_oauth_config():
     }
 
 
+def _is_https(request: Request) -> bool:
+    """
+    프록시 환경(ngrok, 로드밸런서)에서도 HTTPS 여부 판단
+
+    우선순위:
+    1) X-Forwarded-Proto 헤더
+    2) 설정된 public_url 스킴
+    3) request.url.scheme
+    """
+    xfp = request.headers.get("x-forwarded-proto", "")
+    if xfp.lower() == "https":
+        return True
+
+    settings = get_settings()
+    if settings.public_url.startswith("https://"):
+        return True
+
+    return request.url.scheme == "https"
+
+
 # ===== 세션 관리 =====
 
 def create_session(tenant_id: str, user_info: dict) -> str:
@@ -239,12 +259,16 @@ async def oauth_callback(
     response = RedirectResponse(url=redirect_url, status_code=302)
 
     # 세션 쿠키 설정
+    # 프록시 뒤에서도 HTTPS를 인식하도록 _is_https 사용
+    secure_cookie = _is_https(request)
+    same_site = "none" if secure_cookie else "lax"
+
     response.set_cookie(
         key="admin_session",
         value=session_id,
         httponly=True,
-        secure=True,  # HTTPS에서만
-        samesite="lax",
+        secure=secure_cookie,
+        samesite=same_site,
         max_age=86400,  # 24시간
     )
 

@@ -217,24 +217,33 @@ class FreshchatWebhookHandler:
                 payload_preview=payload[:100].decode('utf-8', errors='replace') if payload else None,
             )
 
-            # RSA-SHA256 with PKCS#1 v1.5 패딩 검증
-            public_key.verify(
-                signature_bytes,
-                payload,
-                padding.PKCS1v15(),
-                hashes.SHA256(),
-            )
+            def _verify(hash_algorithm) -> bool:
+                """알고리즘별 검증 헬퍼"""
+                try:
+                    public_key.verify(
+                        signature_bytes,
+                        payload,
+                        padding.PKCS1v15(),
+                        hash_algorithm,
+                    )
+                    return True
+                except InvalidSignature:
+                    return False
+
+            # Freshchat 문서 기준은 SHA256이지만, 일부 테넌트에서 SHA1을 사용하는 사례가 있어
+            # SHA256 실패 시 SHA1로 한 번 더 검증한다.
+            if not _verify(hashes.SHA256()):
+                if not _verify(hashes.SHA1()):
+                    logger.warning(
+                        "Invalid webhook signature",
+                        payload_len=len(payload) if payload else 0,
+                        sig_len=len(signature_bytes),
+                    )
+                    return False
 
             logger.debug("Webhook signature verified successfully")
             return True
 
-        except InvalidSignature:
-            logger.warning(
-                "Invalid webhook signature",
-                payload_len=len(payload) if payload else 0,
-                sig_len=len(signature_bytes) if 'signature_bytes' in dir() else 0,
-            )
-            return False
         except Exception as e:
             logger.error("Signature verification error", error=str(e))
             return False

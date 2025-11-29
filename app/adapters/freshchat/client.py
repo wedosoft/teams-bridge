@@ -557,8 +557,13 @@ class FreshchatClient:
                 # Authorization 헤더만 (Content-Type은 multipart로 자동 설정)
                 headers = {"Authorization": f"Bearer {self.api_key}"}
 
+                # Freshchat은 파일/이미지 업로드 엔드포인트가 분리되어 있음
+                # 이미지면 CDN 최적화를 위해 images/upload 사용, 그 외에는 files/upload 사용
+                is_image = content_type.startswith("image/")
+                upload_path = "/images/upload" if is_image else "/files/upload"
+
                 response = await client.post(
-                    f"{self.api_url}/files",
+                    f"{self.api_url}{upload_path}",
                     headers=headers,
                     files=files,
                 )
@@ -568,6 +573,15 @@ class FreshchatClient:
                 # 응답 정규화 (다양한 응답 형태 처리)
                 return self._normalize_upload_response(data, filename, content_type)
 
+            except httpx.HTTPStatusError as e:
+                # Freshchat에서 400/401 원인 파악을 위해 응답 본문을 함께 로깅
+                logger.error(
+                    "Failed to upload file",
+                    filename=filename,
+                    status=e.response.status_code,
+                    response=e.response.text[:500],
+                )
+                return None
             except Exception as e:
                 logger.error("Failed to upload file", filename=filename, error=str(e))
                 return None
