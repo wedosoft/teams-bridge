@@ -604,6 +604,11 @@ class TeamsBot:
 
         # 토큰 획득 (한 번만)
         token = await self._get_attachment_token(context)
+        logger.info(
+            "Attachment token status",
+            has_token=bool(token),
+            token_len=len(token) if token else 0,
+        )
         last_error = None
 
         for candidate in candidates:
@@ -613,8 +618,16 @@ class TeamsBot:
                     "Accept": "*/*",
                 }
 
-                if candidate["requires_auth"] and token:
+                use_auth = candidate["requires_auth"] and token
+                if use_auth:
                     headers["Authorization"] = f"Bearer {token}"
+
+                logger.debug(
+                    "Attempting attachment download",
+                    label=candidate["label"],
+                    requires_auth=candidate["requires_auth"],
+                    using_auth=use_auth,
+                )
 
                 async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
                     response = await client.get(candidate["url"], headers=headers)
@@ -766,39 +779,47 @@ class TeamsBot:
 
         # 1. MicrosoftAppCredentials로 직접 토큰 획득 (가장 신뢰성 있음)
         try:
-            from botbuilder.connector import MicrosoftAppCredentials
+            from botbuilder.connector.auth import MicrosoftAppCredentials
 
             credentials = MicrosoftAppCredentials(
                 app_id=self._app_id,
                 password=self._app_password,
             )
-            token = await credentials.get_token()
+            # get_access_token()이 정확한 메서드명 (not get_token)
+            token = credentials.get_access_token()
             if token:
-                logger.debug("Got attachment token from MicrosoftAppCredentials")
+                logger.info(
+                    "Got attachment token from MicrosoftAppCredentials",
+                    token_prefix=token[:20] + "..." if token else None,
+                )
                 return token
         except Exception as e:
-            logger.debug("Failed to get token from MicrosoftAppCredentials", error=str(e))
+            logger.warning("Failed to get token from MicrosoftAppCredentials", error=str(e))
 
         # 2. adapter.credentials에서 시도
         try:
             if hasattr(self.adapter, "credentials") and self.adapter.credentials:
-                result = await self.adapter.credentials.get_token()
-                if result:
-                    # 다양한 응답 형태 처리
+                creds = self.adapter.credentials
+                # get_access_token 먼저 시도
+                if hasattr(creds, "get_access_token"):
+                    token = creds.get_access_token()
+                elif hasattr(creds, "get_token"):
+                    result = await creds.get_token()
                     if isinstance(result, str):
                         token = result
                     elif hasattr(result, "token"):
                         token = result.token
                     elif hasattr(result, "access_token"):
                         token = result.access_token
-                    elif isinstance(result, dict):
-                        token = result.get("token") or result.get("access_token") or result.get("value")
 
                 if token:
-                    logger.debug("Got attachment token from adapter.credentials")
+                    logger.info(
+                        "Got attachment token from adapter.credentials",
+                        token_prefix=token[:20] + "..." if token else None,
+                    )
                     return token
         except Exception as e:
-            logger.debug("Failed to get token from adapter.credentials", error=str(e))
+            logger.warning("Failed to get token from adapter.credentials", error=str(e))
 
         # 3. ConnectorClient 생성하여 시도 (Fallback)
         try:
@@ -807,21 +828,28 @@ class TeamsBot:
                 connector_client = await self.adapter.create_connector_client(service_url)
                 if connector_client and hasattr(connector_client, "config"):
                     creds = getattr(connector_client.config, "credentials", None)
-                    if creds and hasattr(creds, "get_token"):
-                        result = await creds.get_token()
-                        if isinstance(result, str):
-                            token = result
-                        elif hasattr(result, "token"):
-                            token = result.token
-                        elif hasattr(result, "access_token"):
-                            token = result.access_token
+                    if creds:
+                        if hasattr(creds, "get_access_token"):
+                            token = creds.get_access_token()
+                        elif hasattr(creds, "get_token"):
+                            result = await creds.get_token()
+                            if isinstance(result, str):
+                                token = result
+                            elif hasattr(result, "token"):
+                                token = result.token
+                            elif hasattr(result, "access_token"):
+                                token = result.access_token
                         if token:
-                            logger.debug("Got attachment token from connector client")
+                            logger.info(
+                                "Got attachment token from connector client",
+                                token_prefix=token[:20] + "..." if token else None,
+                            )
+                            return token
         except Exception as e:
-            logger.debug("Failed to get token from connector client", error=str(e))
+            logger.warning("Failed to get token from connector client", error=str(e))
 
         if not token:
-            logger.warning("Failed to get attachment token from all sources")
+            logger.error("Failed to get attachment token from all sources")
 
         return token
 
