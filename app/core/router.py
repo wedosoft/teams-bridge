@@ -9,6 +9,7 @@
 - 대화 생성 및 매핑 관리
 - 첨부파일 양방향 전송
 """
+import asyncio
 from typing import Any, Optional
 
 from botbuilder.core import TurnContext
@@ -259,41 +260,11 @@ class MessageRouter:
             logger.error("Failed to create platform user")
             return None
 
-        # 2. 첨부파일 처리
+        # 2. 첨부파일 병렬 처리
         message_text = message.text
-        attachments = []
-
-        if message.attachments:
-            for att in message.attachments:
-                downloaded = await self.bot.download_attachment(context, att)
-                if downloaded:
-                    file_buffer, content_type, filename = downloaded
-
-                    # 이미지인 경우 Supabase Storage에 업로드하여 공개 URL 획득
-                    public_url = None
-                    if self._is_image_content_type(content_type, filename):
-                        public_url = await self.db.upload_to_storage(
-                            file_buffer=file_buffer,
-                            filename=filename,
-                            content_type=content_type,
-                        )
-                        logger.info(
-                            "Uploaded image to Supabase Storage",
-                            filename=filename,
-                            public_url=public_url,
-                        )
-
-                    # Freshchat에도 업로드 (file_hash 획득용)
-                    uploaded = await client.upload_file(
-                        file_buffer=file_buffer,
-                        filename=filename,
-                        content_type=content_type,
-                    )
-                    if uploaded:
-                        # 공개 URL이 있으면 첨부파일에 추가
-                        if public_url:
-                            uploaded["url"] = public_url
-                        attachments.append(uploaded)
+        attachments = await self._process_attachments_parallel(
+            context, message.attachments or [], client
+        )
 
         # 3. 대화 생성
         result = await client.create_conversation(
@@ -347,39 +318,10 @@ class MessageRouter:
         if not conversation_id or not user_id:
             return False
 
-        # 첨부파일 처리
-        attachments = []
-        if message.attachments:
-            for att in message.attachments:
-                downloaded = await self.bot.download_attachment(context, att)
-                if downloaded:
-                    file_buffer, content_type, filename = downloaded
-
-                    # 이미지인 경우 Supabase Storage에 업로드하여 공개 URL 획득
-                    public_url = None
-                    if self._is_image_content_type(content_type, filename):
-                        public_url = await self.db.upload_to_storage(
-                            file_buffer=file_buffer,
-                            filename=filename,
-                            content_type=content_type,
-                        )
-                        logger.info(
-                            "Uploaded image to Supabase Storage",
-                            filename=filename,
-                            public_url=public_url,
-                        )
-
-                    # Freshchat에도 업로드 (file_hash 획득용)
-                    uploaded = await client.upload_file(
-                        file_buffer=file_buffer,
-                        filename=filename,
-                        content_type=content_type,
-                    )
-                    if uploaded:
-                        # 공개 URL이 있으면 첨부파일에 추가
-                        if public_url:
-                            uploaded["url"] = public_url
-                        attachments.append(uploaded)
+        # 첨부파일 병렬 처리
+        attachments = await self._process_attachments_parallel(
+            context, message.attachments or [], client
+        )
 
         # 메시지 전송
         return await client.send_message(
@@ -529,11 +471,11 @@ class MessageRouter:
         """
         텍스트와 모든 첨부파일을 하나의 메시지로 통합 전송
 
-        - 이미지: HeroCard로 인라인 표시
+        - 이미지: Adaptive Card로 원본 비율 유지하여 표시
         - 비디오/파일: 텍스트에 링크로 추가
         - 모든 내용을 하나의 메시지로 전송
         """
-        from botbuilder.schema import Attachment, HeroCard, CardImage
+        from botbuilder.schema import Attachment
 
         # 첨부파일 분류
         image_attachments = []
@@ -573,17 +515,32 @@ class MessageRouter:
 
         combined_text = "\n\n".join(message_parts) if message_parts else None
 
-        # Bot attachments (이미지만 HeroCard로)
+        # Bot attachments (이미지는 Adaptive Card로 적절한 크기 + 비율 유지)
         bot_attachments = []
         if image_attachments:
-            card_images = [
-                CardImage(url=att.url, alt=att.name or "image")
-                for att in image_attachments
-            ]
-            hero_card = HeroCard(images=card_images)
+            # Adaptive Card body에 이미지들 추가
+            card_body = []
+            for att in image_attachments:
+                card_body.append({
+                    "type": "Image",
+                    "url": att.url,
+                    "size": "Medium",  # 적절한 크기로 제한 (비율 유지)
+                    "altText": att.name or "image",
+                    "selectAction": {  # 클릭 시 원본 이미지 열기
+                        "type": "Action.OpenUrl",
+                        "url": att.url,
+                    },
+                })
+
+            adaptive_card = {
+                "type": "AdaptiveCard",
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "body": card_body,
+            }
             bot_attachments.append(Attachment(
-                content_type="application/vnd.microsoft.card.hero",
-                content=hero_card,
+                content_type="application/vnd.microsoft.card.adaptive",
+                content=adaptive_card,
             ))
 
         # 텍스트나 첨부파일이 있으면 하나의 메시지로 전송
@@ -604,11 +561,11 @@ class MessageRouter:
         """
         첨부파일을 Teams로 전송
 
-        - 이미지: HeroCard로 인라인 표시 (캡처 이미지 포함)
+        - 이미지: Adaptive Card로 원본 비율 유지하여 표시
         - 비디오: 링크로 표시
         - 기타 파일: Adaptive Card로 다운로드 링크 제공
         """
-        from botbuilder.schema import Attachment, HeroCard, CardImage
+        from botbuilder.schema import Attachment
 
         for att in attachments:
             if not att.url:
@@ -618,13 +575,27 @@ class MessageRouter:
             is_image = att.type == "image" or self._is_image_content_type(att.content_type, att.name)
 
             if is_image:
-                # 이미지는 HeroCard로 인라인 표시 (캡처 이미지 포함 모든 이미지)
-                hero_card = HeroCard(
-                    images=[CardImage(url=att.url, alt=att.name or "image")],
-                )
+                # 이미지는 Adaptive Card로 적절한 크기 + 비율 유지
+                adaptive_card = {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                    "body": [
+                        {
+                            "type": "Image",
+                            "url": att.url,
+                            "size": "Medium",  # 적절한 크기로 제한 (비율 유지)
+                            "altText": att.name or "image",
+                            "selectAction": {  # 클릭 시 원본 이미지 열기
+                                "type": "Action.OpenUrl",
+                                "url": att.url,
+                            },
+                        }
+                    ],
+                }
                 card_attachment = Attachment(
-                    content_type="application/vnd.microsoft.card.hero",
-                    content=hero_card,
+                    content_type="application/vnd.microsoft.card.adaptive",
+                    content=adaptive_card,
                 )
 
                 # 발신자 이름 포함
@@ -683,6 +654,84 @@ class MessageRouter:
             return any(lower_name.endswith(ext) for ext in video_exts)
 
         return False
+
+    async def _process_attachment_parallel(
+        self,
+        context: TurnContext,
+        att: TeamsAttachment,
+        client: HelpdeskClient,
+    ) -> Optional[dict]:
+        """
+        단일 첨부파일을 병렬로 처리 (다운로드 → Supabase + Freshchat 동시 업로드)
+
+        Returns:
+            첨부파일 정보 dict (url, file_hash 등) 또는 None
+        """
+        downloaded = await self.bot.download_attachment(context, att)
+        if not downloaded:
+            return None
+
+        file_buffer, content_type, filename = downloaded
+
+        # 이미지인 경우 Supabase + Freshchat 동시 업로드
+        if self._is_image_content_type(content_type, filename):
+            # 병렬 업로드
+            supabase_task = self.db.upload_to_storage(
+                file_buffer=file_buffer,
+                filename=filename,
+                content_type=content_type,
+            )
+            freshchat_task = client.upload_file(
+                file_buffer=file_buffer,
+                filename=filename,
+                content_type=content_type,
+            )
+
+            public_url, uploaded = await asyncio.gather(supabase_task, freshchat_task)
+
+            if uploaded:
+                if public_url:
+                    uploaded["url"] = public_url
+                    logger.info(
+                        "Uploaded image in parallel",
+                        filename=filename,
+                        public_url=public_url,
+                    )
+                return uploaded
+            return None
+        else:
+            # 비-이미지는 Freshchat만 업로드
+            uploaded = await client.upload_file(
+                file_buffer=file_buffer,
+                filename=filename,
+                content_type=content_type,
+            )
+            return uploaded
+
+    async def _process_attachments_parallel(
+        self,
+        context: TurnContext,
+        attachments: list[TeamsAttachment],
+        client: HelpdeskClient,
+    ) -> list[dict]:
+        """
+        여러 첨부파일을 병렬로 처리
+
+        Returns:
+            처리된 첨부파일 정보 리스트
+        """
+        if not attachments:
+            return []
+
+        tasks = [
+            self._process_attachment_parallel(context, att, client)
+            for att in attachments
+        ]
+
+        results = await asyncio.gather(*tasks)
+
+        # None 제외하고 반환
+        return [r for r in results if r is not None]
 
 
 # ===== 싱글톤 =====
