@@ -505,27 +505,95 @@ class MessageRouter:
             if client:
                 agent_name = await client.get_agent_name(message.actor_id)
 
-        # 텍스트 메시지
-        if message.text:
-            await self.bot.send_proactive_message(
-                conversation_reference=mapping.conversation_reference,
-                text=message.text,
-                sender_name=agent_name,
-            )
-
-        # 첨부파일
-        if message.attachments:
-            await self._send_attachments_to_teams(
-                message.attachments,
-                mapping,
-                agent_name,
-            )
+        # 텍스트와 첨부파일을 하나의 메시지로 통합 전송
+        await self._send_combined_message_to_teams(
+            text=message.text,
+            attachments=message.attachments,
+            mapping=mapping,
+            agent_name=agent_name,
+        )
 
         logger.info(
             "Sent message to Teams",
             teams_conversation_id=mapping.teams_conversation_id,
             actor_type=message.actor_type,
         )
+
+    async def _send_combined_message_to_teams(
+        self,
+        text: Optional[str],
+        attachments: Optional[list[ParsedAttachment]],
+        mapping: ConversationMapping,
+        agent_name: Optional[str] = None,
+    ) -> None:
+        """
+        텍스트와 모든 첨부파일을 하나의 메시지로 통합 전송
+
+        - 이미지: HeroCard로 인라인 표시
+        - 비디오/파일: 텍스트에 링크로 추가
+        - 모든 내용을 하나의 메시지로 전송
+        """
+        from botbuilder.schema import Attachment, HeroCard, CardImage
+
+        # 첨부파일 분류
+        image_attachments = []
+        video_attachments = []
+        file_attachments = []
+
+        if attachments:
+            for att in attachments:
+                if not att.url:
+                    continue
+
+                is_image = att.type == "image" or self._is_image_content_type(att.content_type, att.name)
+                is_video = att.type == "video" or self._is_video_content_type(att.content_type, att.name)
+
+                if is_image:
+                    image_attachments.append(att)
+                elif is_video:
+                    video_attachments.append(att)
+                else:
+                    file_attachments.append(att)
+
+        # 텍스트 구성 (원본 텍스트 + 비디오/파일 링크)
+        message_parts = []
+
+        if text:
+            message_parts.append(text)
+
+        # 비디오 링크 추가
+        for att in video_attachments:
+            display_name = att.name or "video"
+            message_parts.append(f"🎬 [{display_name}]({att.url})")
+
+        # 파일 링크 추가
+        for att in file_attachments:
+            display_name = att.name or "file"
+            message_parts.append(f"📎 [{display_name}]({att.url})")
+
+        combined_text = "\n\n".join(message_parts) if message_parts else None
+
+        # Bot attachments (이미지만 HeroCard로)
+        bot_attachments = []
+        if image_attachments:
+            card_images = [
+                CardImage(url=att.url, alt=att.name or "image")
+                for att in image_attachments
+            ]
+            hero_card = HeroCard(images=card_images)
+            bot_attachments.append(Attachment(
+                content_type="application/vnd.microsoft.card.hero",
+                content=hero_card,
+            ))
+
+        # 텍스트나 첨부파일이 있으면 하나의 메시지로 전송
+        if combined_text or bot_attachments:
+            await self.bot.send_proactive_message(
+                conversation_reference=mapping.conversation_reference,
+                text=combined_text,
+                attachments=bot_attachments if bot_attachments else None,
+                sender_name=agent_name,
+            )
 
     async def _send_attachments_to_teams(
         self,
