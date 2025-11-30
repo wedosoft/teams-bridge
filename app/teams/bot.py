@@ -149,6 +149,15 @@ class TeamsBot:
             if activity.from_property.id == activity.recipient.id:
                 return
 
+        # 디버깅: activity 상세 정보 로깅
+        logger.info(
+            "Activity details",
+            text=activity.text[:100] if activity.text else None,
+            text_format=activity.text_format,
+            attachment_count=len(activity.attachments) if activity.attachments else 0,
+            entities_count=len(activity.entities) if activity.entities else 0,
+        )
+
         # 사용자 정보 수집
         user = await self._collect_user_info(context)
 
@@ -272,8 +281,54 @@ class TeamsBot:
             return attachments
 
         for att in activity.attachments:
-            # Adaptive Card 등 인라인 콘텐츠는 스킵
+            # 상세 로깅 추가 (디버깅용)
+            logger.info(
+                "Processing attachment",
+                content_type=att.content_type,
+                name=att.name,
+                content_url=att.content_url[:100] if att.content_url else None,
+                has_content=att.content is not None,
+                content_type_of_content=type(att.content).__name__ if att.content else None,
+            )
+
+            # Adaptive Card 등 인라인 콘텐츠는 스킵 (단, file.download.info는 처리)
             if att.content_type and att.content_type.startswith("application/vnd.microsoft"):
+                # file.download.info는 실제 파일 첨부이므로 처리해야 함
+                if att.content_type != "application/vnd.microsoft.teams.file.download.info":
+                    logger.debug("Skipping Microsoft card attachment", content_type=att.content_type)
+                    continue
+
+            # text/html인 경우 content 내용 로깅 (이미지 URL 포함 여부 확인)
+            if att.content_type and att.content_type.lower() == "text/html":
+                html_content = att.content if isinstance(att.content, str) else str(att.content)
+                logger.info(
+                    "HTML attachment content",
+                    content_preview=html_content[:500] if html_content else None,
+                    content_length=len(html_content) if html_content else 0,
+                )
+                # HTML 내에서 이미지 URL 추출 시도
+                import re
+                img_urls = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html_content, re.IGNORECASE)
+                if img_urls:
+                    logger.info("Found image URLs in HTML", urls=img_urls)
+                    # 첫 번째 이미지 URL 사용
+                    for img_url in img_urls:
+                        if img_url.startswith("http"):
+                            # 이미지 URL이 있으면 attachment로 추가
+                            img_filename = img_url.split("/")[-1].split("?")[0] or "image.png"
+                            img_content_type = self._detect_content_type_from_filename(img_filename) or "image/png"
+                            attachments.append(TeamsAttachment(
+                                name=img_filename,
+                                content_type=img_content_type,
+                                content_url=img_url,
+                                content=None,
+                            ))
+                            logger.info("Added image from HTML", url=img_url, filename=img_filename)
+                continue
+
+            # text/plain은 스킵
+            if att.content_type and att.content_type.lower() == "text/plain":
+                logger.debug("Skipping text attachment", content_type=att.content_type)
                 continue
 
             # 파일 첨부 URL 결정 (여러 위치에서 찾기)
@@ -315,7 +370,11 @@ class TeamsBot:
                 filename = f"attachment{ext}" if ext else "attachment"
 
             # content_type 결정
-            content_type = att.content_type or content_data.get("mimeType") or "application/octet-stream"
+            # file.download.info 타입이면 파일명에서 실제 content_type 추론
+            if att.content_type == "application/vnd.microsoft.teams.file.download.info":
+                content_type = self._detect_content_type_from_filename(filename) or "application/octet-stream"
+            else:
+                content_type = att.content_type or content_data.get("mimeType") or "application/octet-stream"
 
             if content_url:
                 attachments.append(TeamsAttachment(
