@@ -151,13 +151,20 @@ class Database:
             공개 URL 또는 None (실패 시)
         """
         try:
-            # 고유한 파일 경로 생성 (UUID + 원본 파일명)
+            # 고유한 파일 경로 생성 (UUID + 확장자)
             unique_id = uuid.uuid4().hex[:12]
-            # 파일명에서 특수문자 제거
-            safe_filename = "".join(
-                c if c.isalnum() or c in ".-_" else "_" for c in filename
-            )
-            file_path = f"{unique_id}_{safe_filename}"
+
+            # 파일 확장자 추출
+            ext = ""
+            if "." in filename:
+                ext = "." + filename.rsplit(".", 1)[-1].lower()
+                # 확장자도 ASCII만 허용
+                if not ext[1:].isascii() or not ext[1:].isalnum():
+                    ext = self._get_extension_from_content_type(content_type)
+
+            # Supabase Storage는 ASCII 파일명만 허용
+            # 한글 등 비-ASCII 문자가 포함된 파일명은 UUID + 확장자로 대체
+            file_path = f"{unique_id}{ext}"
 
             # Storage에 업로드
             self.client.storage.from_(bucket).upload(
@@ -187,3 +194,17 @@ class Database:
                 bucket=bucket,
             )
             return None
+
+    def _get_extension_from_content_type(self, content_type: str) -> str:
+        """content_type에서 파일 확장자 추론"""
+        ext_map = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/bmp": ".bmp",
+            "image/svg+xml": ".svg",
+            "application/pdf": ".pdf",
+            "application/zip": ".zip",
+        }
+        return ext_map.get(content_type, "")
