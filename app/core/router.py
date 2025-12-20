@@ -893,6 +893,11 @@ class MessageRouter:
             return False
 
         text = (message.text or "").strip()
+        if text in {"내 요청함", "/내요청함", "/requests", "requests"}:
+            await context.send_activity(
+                "진행상황 확인과 추가 문의는 '내 요청함' 탭에서 확인해 주세요."
+            )
+            return True
         if text in {"검토요청", "검토 요청", "legal", "/legal", "new", "/new"}:
             menu_card = build_legal_prompt_menu_card()
             await context.send_activity(

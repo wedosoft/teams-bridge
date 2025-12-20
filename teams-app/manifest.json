@@ -1,7 +1,7 @@
 {
   "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
   "manifestVersion": "1.16",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "id": "77a6e06c-9d85-428b-ad30-035b9c698eb4",
   "packageName": "com.poscointl.legalhelp",
   "developer": {
@@ -48,16 +48,32 @@
           "scopes": ["personal"],
           "commands": [
             {
-              "title": "help",
-              "description": "도움말 보기"
-            },
-            {
-              "title": "status",
-              "description": "현재 상담 상태 확인"
-            },
-            {
               "title": "검토요청",
-              "description": "법무 검토요청 인테이크 카드 열기"
+              "description": "법무 검토 요청 접수(간편 메뉴)"
+            },
+            {
+              "title": "계약서 검토(표준)",
+              "description": "간편 접수: 계약서 검토(표준)"
+            },
+            {
+              "title": "NDA/비밀유지",
+              "description": "간편 접수: NDA/비밀유지"
+            },
+            {
+              "title": "거래처 조건 협의/특약 검토",
+              "description": "간편 접수: 거래처 조건 협의/특약 검토"
+            },
+            {
+              "title": "개인정보/보안 이슈",
+              "description": "간편 접수: 개인정보/보안 이슈"
+            },
+            {
+              "title": "공정거래/컴플라이언스 문의",
+              "description": "간편 접수: 공정거래/컴플라이언스 문의"
+            },
+            {
+              "title": "기타(추가 정보 요청 예정)",
+              "description": "간편 접수: 기타(추가 정보 요청 예정)"
             }
           ]
         }

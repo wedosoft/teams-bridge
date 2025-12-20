@@ -100,7 +100,11 @@ class TeamsBot:
         self._message_handler: Optional[Callable] = None
 
         # 환영 메시지 설정 (TODO: 테넌트별 설정에서 로드)
-        self._welcome_message = "안녕하세요! IT 헬프데스크입니다. 무엇을 도와드릴까요?"
+        self._welcome_message = (
+            "이 채팅은 입력을 받지 않습니다. "
+            "우측 하단 '프롬프트 보기'에서 '검토요청' 또는 '내 요청함'을 선택해 주세요. "
+            "즉시 답변은 제공되지 않으며 진행상황/추가 문의는 '내 요청함'에서 확인합니다."
+        )
 
     def set_message_handler(self, handler: Callable) -> None:
         """메시지 핸들러 설정"""
@@ -342,7 +346,13 @@ class TeamsBot:
                 elif isinstance(submit.get("action"), dict) and isinstance(submit["action"].get("data"), dict):
                     submit = submit["action"]["data"]
 
-                if isinstance(submit, dict) and submit.get("action") == "create_legal_case":
+                if isinstance(submit, dict) and submit.get("action") in {
+                    "create_legal_case",
+                    "create_legal_case_quick",
+                    "open_legal_intake",
+                    "show_request_tab_help",
+                    "show_link_help",
+                }:
                     await self._handle_invoke(context)
                     return
             except Exception:
@@ -777,21 +787,6 @@ class TeamsBot:
                 conversation_id=activity.conversation.id if activity.conversation else None,
                 tenant_id=activity.conversation.tenant_id if activity.conversation else None,
             )
-            try:
-                menu_card = build_legal_prompt_menu_card()
-                await context.send_activity(
-                    Activity(
-                        type=ActivityTypes.message,
-                        attachments=[
-                            Attachment(
-                                content_type="application/vnd.microsoft.card.adaptive",
-                                content=menu_card,
-                            )
-                        ],
-                    )
-                )
-            except Exception as e:
-                logger.warning("Failed to send prompt menu on install", error=str(e))
         elif action == "remove":
             logger.info(
                 "Bot uninstalled",
