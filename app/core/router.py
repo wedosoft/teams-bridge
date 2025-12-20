@@ -261,6 +261,10 @@ class MessageRouter:
             logger.error("No user info in message")
             return None
 
+        fixed_requester_email = None
+        if tenant.platform == Platform.FRESHDESK:
+            fixed_requester_email = "requestor!@wedosoft.net"
+
         # 사용자 프로필 (기본 + 확장 정보)
         properties = {}
         if user.tenant_id:
@@ -282,7 +286,7 @@ class MessageRouter:
         platform_user_id = await client.get_or_create_user(
             reference_id=user.id,
             name=user.name,
-            email=user.email,
+            email=fixed_requester_email or user.email,
             properties=properties if properties else None,
         )
 
@@ -297,12 +301,18 @@ class MessageRouter:
         )
 
         # 3. 대화 생성
+        metadata = dict(getattr(message, "metadata", None) or {})
+        if fixed_requester_email:
+            metadata["requester_email"] = fixed_requester_email
+            if user.name:
+                metadata.setdefault("requester_name", user.name)
+
         result = await client.create_conversation(
             user_id=platform_user_id,
             user_name=user.name or "Unknown",
             message_text=message_text,
             attachments=attachments if attachments else None,
-            metadata=getattr(message, "metadata", None),
+            metadata=metadata if metadata else None,
         )
 
         if not result:
