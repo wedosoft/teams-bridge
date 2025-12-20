@@ -167,7 +167,12 @@ class TeamsBot:
 
         action = submit_data.get("action")
         if action == "open_legal_intake":
-            card = build_legal_intake_card()
+            subject_value = (submit_data.get("subject") or "").strip()
+            request_type_value = (submit_data.get("request_type") or "").strip()
+            card = build_legal_intake_card(
+                subject_value=subject_value,
+                request_type_value=request_type_value,
+            )
             await context.send_activity(
                 Activity(
                     type=ActivityTypes.message,
@@ -179,49 +184,6 @@ class TeamsBot:
                     ],
                 )
             )
-            return
-        if action == "create_legal_case_quick":
-            request_type = (submit_data.get("request_type") or "기타").strip()
-            subject = (submit_data.get("subject") or request_type or "법무 검토 요청").strip()
-
-            description_lines = [
-                "[간편 접수]",
-                f"- 유형: {request_type or '미입력'}",
-                "- 상세 내용은 '내 요청함'에서 추가 요청 예정",
-            ]
-            final_description = "\n".join(description_lines)
-
-            user = await self._collect_user_info(context)
-            conversation_reference = TurnContext.get_conversation_reference(activity)
-            conversation_reference_dict = self._serialize_conversation_reference(conversation_reference)
-
-            message = TeamsMessage(
-                id=activity.id or "",
-                text=final_description,
-                attachments=[],
-                user=user,
-                conversation_id=activity.conversation.id if activity.conversation else "",
-                conversation_reference=conversation_reference_dict,
-                metadata={
-                    "subject": subject,
-                    "description": final_description,
-                    "requester_email": user.email,
-                    "requester_name": user.name,
-                    "request_type": request_type,
-                    "force_new_conversation": True,
-                },
-            )
-
-            await self._update_intake_card_with_summary(
-                context=context,
-                submit_data={
-                    "subject": subject,
-                    "request_type": request_type,
-                },
-            )
-
-            if self._message_handler:
-                await self._message_handler(context=context, message=message)
             return
         if action == "show_request_tab_help":
             await context.send_activity(
@@ -348,7 +310,6 @@ class TeamsBot:
 
                 if isinstance(submit, dict) and submit.get("action") in {
                     "create_legal_case",
-                    "create_legal_case_quick",
                     "open_legal_intake",
                     "show_request_tab_help",
                     "show_link_help",
@@ -1349,6 +1310,7 @@ def build_file_card(
 def build_legal_intake_card(
     subject_value: str = "",
     description_value: str = "",
+    request_type_value: str = "",
 ) -> dict:
     """법무 검토요청 인테이크용 Adaptive Card (실무형)"""
     return {
@@ -1390,6 +1352,7 @@ def build_legal_intake_card(
                 "label": "요청 유형",
                 "isRequired": True,
                 "style": "compact",
+                **({"value": request_type_value} if request_type_value else {}),
                 "choices": [
                     {"title": "계약서", "value": "계약서"},
                     {"title": "NDA/비밀유지", "value": "NDA"},
@@ -1516,56 +1479,32 @@ def build_legal_prompt_menu_card() -> dict:
             {
                 "type": "Action.Submit",
                 "title": "계약서 검토(표준)",
-                "data": {
-                    "action": "create_legal_case_quick",
-                    "request_type": "계약서 검토(표준)",
-                    "subject": "계약서 검토(표준)",
-                },
+                "data": {"action": "open_legal_intake", "request_type": "계약서", "subject": "계약서 검토(표준)"},
             },
             {
                 "type": "Action.Submit",
                 "title": "NDA/비밀유지",
-                "data": {
-                    "action": "create_legal_case_quick",
-                    "request_type": "NDA/비밀유지",
-                    "subject": "NDA/비밀유지",
-                },
+                "data": {"action": "open_legal_intake", "request_type": "NDA", "subject": "NDA/비밀유지"},
             },
             {
                 "type": "Action.Submit",
                 "title": "거래처 조건 협의/특약 검토",
-                "data": {
-                    "action": "create_legal_case_quick",
-                    "request_type": "거래처 조건 협의/특약 검토",
-                    "subject": "거래처 조건 협의/특약 검토",
-                },
+                "data": {"action": "open_legal_intake", "request_type": "기타", "subject": "거래처 조건 협의/특약 검토"},
             },
             {
                 "type": "Action.Submit",
                 "title": "개인정보/보안 이슈",
-                "data": {
-                    "action": "create_legal_case_quick",
-                    "request_type": "개인정보/보안 이슈",
-                    "subject": "개인정보/보안 이슈",
-                },
+                "data": {"action": "open_legal_intake", "request_type": "개인정보", "subject": "개인정보/보안 이슈"},
             },
             {
                 "type": "Action.Submit",
                 "title": "공정거래/컴플라이언스 문의",
-                "data": {
-                    "action": "create_legal_case_quick",
-                    "request_type": "공정거래/컴플라이언스 문의",
-                    "subject": "공정거래/컴플라이언스 문의",
-                },
+                "data": {"action": "open_legal_intake", "request_type": "컴플라이언스", "subject": "공정거래/컴플라이언스 문의"},
             },
             {
                 "type": "Action.Submit",
                 "title": "기타(추가 정보 요청 예정)",
-                "data": {
-                    "action": "create_legal_case_quick",
-                    "request_type": "기타(추가 정보 요청 예정)",
-                    "subject": "기타(추가 정보 요청 예정)",
-                },
+                "data": {"action": "open_legal_intake", "request_type": "기타", "subject": "기타(추가 정보 요청 예정)"},
             },
             {
                 "type": "Action.OpenUrl",

@@ -235,7 +235,12 @@
           || statusText === '종료'
           || statusText === 'Resolved'
           || statusText === 'Closed';
-        document.getElementById('btn-send').disabled = isBlocked;
+        const sendBtn = document.getElementById('btn-send');
+        const clearBtn = document.getElementById('btn-clear');
+        const textarea = document.getElementById('inquiry-body');
+        sendBtn.disabled = isBlocked;
+        clearBtn.disabled = isBlocked;
+        textarea.disabled = isBlocked;
       } catch (e) {
         show(inquiryErr, e.message || String(e));
       }
