@@ -12,6 +12,7 @@ POC 단계에서는 Teams SSO 대신 헤더로 식별:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -48,10 +49,21 @@ class InquiryRequest(BaseModel):
     body: str = Field(..., description="문의 내용(공개 메모)")
 
 
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
 @router.get("/requests")
 async def list_my_requests(
     page: int = 1,
     per_page: int = 30,
+    recent_days: int = 30,
     ctx: tuple[str, str] = Depends(get_request_context),
 ) -> dict:
     teams_tenant_id, requester_email = ctx
@@ -77,9 +89,18 @@ async def list_my_requests(
         per_page=per_page,
     )
 
+    cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
+
     # Teams 탭에서 쓰기 좋은 형태로 최소 필드만 반환
     items = []
     for t in tickets:
+        updated_at = _parse_iso_datetime(t.get("updated_at"))
+        created_at = _parse_iso_datetime(t.get("created_at"))
+        when = updated_at or created_at
+
+        if when and when < cutoff:
+            continue
+
         items.append(
             {
                 "id": t.get("id"),
@@ -93,7 +114,13 @@ async def list_my_requests(
             }
         )
 
-    return {"email": requester_email, "page": page, "per_page": per_page, "items": items}
+    return {
+        "email": requester_email,
+        "page": page,
+        "per_page": per_page,
+        "recent_days": recent_days,
+        "items": items,
+    }
 
 
 @router.get("/requests/{ticket_id}")
