@@ -34,7 +34,8 @@ async def get_request_context(
         raise HTTPException(status_code=401, detail="Missing X-Tenant-ID")
     if not x_requester_email:
         raise HTTPException(status_code=401, detail="Missing X-Requester-Email")
-    return (x_tenant_id, x_requester_email)
+    # POC 임시 고정: "내 요청함"은 고정 요청자 기준으로 검색
+    return (x_tenant_id, "requestor@wedosoft.net")
 
 
 def _is_done(status_value) -> bool:
