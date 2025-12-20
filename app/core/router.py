@@ -262,8 +262,10 @@ class MessageRouter:
             return None
 
         fixed_requester_email = None
+        fixed_requester_name = None
         if tenant.platform == Platform.FRESHDESK:
-            fixed_requester_email = "requestor!@wedosoft.net"
+            fixed_requester_email = "requestor@wedosoft.net"
+            fixed_requester_name = "요청자"
 
         # 사용자 프로필 (기본 + 확장 정보)
         properties = {}
@@ -304,7 +306,9 @@ class MessageRouter:
         metadata = dict(getattr(message, "metadata", None) or {})
         if fixed_requester_email:
             metadata["requester_email"] = fixed_requester_email
-            if user.name:
+            if fixed_requester_name:
+                metadata["requester_name"] = fixed_requester_name
+            elif user.name:
                 metadata.setdefault("requester_name", user.name)
 
         result = await client.create_conversation(
