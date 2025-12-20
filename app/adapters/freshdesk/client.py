@@ -220,6 +220,7 @@ class FreshdeskClient:
         self,
         ticket_id: str,
         body: str,
+        user_id: Optional[int] = None,
     ) -> bool:
         """요청자 문의를 '공개 메모'로 추가
 
@@ -233,6 +234,8 @@ class FreshdeskClient:
             "private": False,
             "incoming": True,
         }
+        if user_id is not None:
+            payload["user_id"] = user_id
         result = await self._request("POST", url, json=payload)
         return result is not None
 

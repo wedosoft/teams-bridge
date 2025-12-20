@@ -247,8 +247,17 @@ async def add_inquiry(
         raise HTTPException(status_code=400, detail="Body is required")
 
     # 누가 남겼는지 명확히 남기기 (운영형에서는 UI/SSO 기반으로 더 정교화)
-    note_body = f"[요청자 문의: {requester_email}]\n\n{body}"
-    ok = await client.add_public_inquiry_note(ticket_id=ticket_id, body=note_body)
+    note_body = f"{body}"
+    requester_id = None
+    try:
+        requester_id = int(requester.get("id")) if requester.get("id") is not None else None
+    except Exception:
+        requester_id = None
+    ok = await client.add_public_inquiry_note(
+        ticket_id=ticket_id,
+        body=note_body,
+        user_id=requester_id,
+    )
 
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to add inquiry")
