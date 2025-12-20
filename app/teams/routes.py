@@ -21,6 +21,11 @@ async def bot_callback(request: Request) -> Response:
     try:
         # 요청 본문 파싱
         body = await request.json()
+        # TeamsChannelData에 알 수 없는 필드가 있으면 경고 로그가 발생하므로 제거
+        channel_data = body.get("channelData")
+        if isinstance(channel_data, dict):
+            channel_data.pop("source", None)
+            channel_data.pop("legacy", None)
         activity = Activity().from_dict(body)
 
         # Auth 헤더 추출

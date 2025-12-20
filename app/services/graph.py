@@ -52,6 +52,8 @@ class GraphService:
 
         # 테넌트별 토큰 캐시
         self._token_cache: dict[str, CachedToken] = {}
+        # 권한 부족으로 프로필 조회를 중단한 테넌트
+        self._forbidden_tenants: set[str] = set()
 
     async def get_access_token(self, tenant_id: str) -> Optional[str]:
         """
@@ -139,6 +141,9 @@ class GraphService:
         Returns:
             GraphUserProfile 또는 None
         """
+        if tenant_id in self._forbidden_tenants:
+            return None
+
         token = await self.get_access_token(tenant_id)
         if not token:
             return None
@@ -161,6 +166,15 @@ class GraphService:
                     headers={"Authorization": f"Bearer {token}"},
                     params={"$select": select_fields},
                 )
+
+                if response.status_code == 403:
+                    logger.info(
+                        "Graph access forbidden; skipping profile enrichment",
+                        tenant_id=tenant_id,
+                        aad_object_id=aad_object_id,
+                    )
+                    self._forbidden_tenants.add(tenant_id)
+                    return None
 
                 if response.status_code != 200:
                     logger.warning(
@@ -240,6 +254,7 @@ class GraphService:
     def invalidate_token_cache(self, tenant_id: str) -> None:
         """특정 테넌트의 토큰 캐시 무효화"""
         self._token_cache.pop(tenant_id, None)
+        self._forbidden_tenants.discard(tenant_id)
 
 
 # ===== 싱글톤 인스턴스 =====
