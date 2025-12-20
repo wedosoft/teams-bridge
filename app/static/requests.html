@@ -43,7 +43,7 @@
       <div class="row">
         <div>
           <h1>내 요청함</h1>
-          <div class="muted" id="whoami">-</div>
+          <div class="muted" id="whoami"></div>
         </div>
         <div class="spacer"></div>
         <button class="btn ghost" id="btn-refresh">새로고침</button>
@@ -57,14 +57,14 @@
             <th style="width: 92px;">상태</th>
             <th>제목</th>
             <th style="width: 120px;">업데이트</th>
-            <th style="width: 150px;">동작</th>
+            <th style="width: 120px;">동작</th>
           </tr>
         </thead>
         <tbody id="ticket-rows">
           <tr><td colspan="4" class="muted">불러오는 중...</td></tr>
         </tbody>
       </table>
-      <div class="notice">* POC 화면입니다. 운영형에서는 Teams SSO 기반으로 요청자 식별/권한검증이 필요합니다.</div>
+      <div class="notice">진행상황 확인과 추가 문의는 이 화면에서 처리됩니다.</div>
     </div>
 
     <div class="card detail">
@@ -89,15 +89,16 @@
 
         <div style="margin-top:14px;">
           <div class="row" style="margin-bottom:8px;">
-            <h2 style="font-size:14px; margin:0;">법무팀에 문의(공개 메모)</h2>
+            <h2 style="font-size:14px; margin:0;">추가 문의(공개 메모)</h2>
             <div class="spacer"></div>
             <button class="btn danger" id="btn-clear" disabled>지우기</button>
           </div>
-          <textarea id="inquiry-body" placeholder="문의 내용을 입력하세요."></textarea>
+          <textarea id="inquiry-body" placeholder="추가로 전달할 내용을 입력하세요."></textarea>
+          <div class="muted" style="margin-top:6px;">추가 문의는 티켓에 공개 메모로 기록됩니다.</div>
           <div class="row" style="margin-top:10px;">
             <div class="muted">* 종료된 티켓에는 문의를 추가할 수 없습니다.</div>
             <div class="spacer"></div>
-            <button class="btn primary" id="btn-send" disabled>문의 추가</button>
+            <button class="btn primary" id="btn-send" disabled>추가 문의 보내기</button>
           </div>
           <div id="inquiry-msg" class="success" style="display:none;"></div>
           <div id="inquiry-err" class="error" style="display:none;"></div>
@@ -136,7 +137,7 @@
         requesterEmail = (new URLSearchParams(location.search)).get('email') || '';
       }
 
-      document.getElementById('whoami').textContent = `tenant=${tenantId || '-'} / email=${requesterEmail || '-'}`;
+      document.getElementById('whoami').textContent = '';
       document.getElementById('btn-refresh').addEventListener('click', loadList);
       document.getElementById('btn-clear').addEventListener('click', () => {
         document.getElementById('inquiry-body').value = '';
@@ -186,8 +187,7 @@
             </td>
             <td>${formatDate(t.updated_at)}</td>
             <td>
-              <button class="btn ghost" onclick="selectTicket('${t.id}')">조회</button>
-              <button class="btn primary" onclick="selectTicket('${t.id}', true)">문의</button>
+              <button class="btn ghost" onclick="selectTicket('${t.id}')">상세보기</button>
             </td>
           </tr>
         `).join('');
@@ -198,7 +198,7 @@
       }
     }
 
-    async function selectTicket(id, focusInquiry) {
+    async function selectTicket(id) {
       selectedTicketId = id;
       document.getElementById('selected-id').textContent = `#${id}`;
       document.getElementById('detail-empty').style.display = 'none';
@@ -229,11 +229,9 @@
         document.getElementById('detail-updated').textContent = formatDate(t.updated_at);
         document.getElementById('detail-desc').textContent = t.description_text || '';
 
-        document.getElementById('btn-send').disabled = !!t.is_done;
-
-        if (focusInquiry) {
-          document.getElementById('inquiry-body').focus();
-        }
+        const statusText = String(t.status ?? '').trim();
+        const isBlocked = !!t.is_done || statusText === '해결됨' || statusText === '종료';
+        document.getElementById('btn-send').disabled = isBlocked;
       } catch (e) {
         show(inquiryErr, e.message || String(e));
       }
@@ -251,7 +249,7 @@
 
       const body = document.getElementById('inquiry-body').value.trim();
       if (!body) {
-        show(inquiryErr, '문의 내용을 입력하세요.');
+        show(inquiryErr, '추가 문의 내용을 입력하세요.');
         return;
       }
 
@@ -275,14 +273,14 @@
           throw new Error(data.detail || `전송 실패 (${res.status})`);
         }
 
-        show(inquiryMsg, '문의가 추가되었습니다.');
+        show(inquiryMsg, '추가 문의가 등록되었습니다.');
         document.getElementById('inquiry-body').value = '';
         await selectTicket(selectedTicketId, false);
         await loadList();
       } catch (e) {
         show(inquiryErr, e.message || String(e));
       } finally {
-        btn.textContent = '문의 추가';
+        btn.textContent = '추가 문의 보내기';
       }
     }
 
@@ -290,4 +288,3 @@
   </script>
 </body>
 </html>
-

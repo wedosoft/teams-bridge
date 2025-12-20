@@ -749,6 +749,23 @@ class TeamsBot:
                 if self._welcome_message:
                     await context.send_activity(self._welcome_message)
 
+                # 초기 프롬프트 메뉴 표시
+                try:
+                    menu_card = build_legal_prompt_menu_card()
+                    await context.send_activity(
+                        Activity(
+                            type=ActivityTypes.message,
+                            attachments=[
+                                Attachment(
+                                    content_type="application/vnd.microsoft.card.adaptive",
+                                    content=menu_card,
+                                )
+                            ],
+                        )
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send prompt menu", error=str(e))
+
     async def _handle_installation_update(self, context: TurnContext) -> None:
         """설치 업데이트 핸들러"""
         activity = context.activity
@@ -760,6 +777,21 @@ class TeamsBot:
                 conversation_id=activity.conversation.id if activity.conversation else None,
                 tenant_id=activity.conversation.tenant_id if activity.conversation else None,
             )
+            try:
+                menu_card = build_legal_prompt_menu_card()
+                await context.send_activity(
+                    Activity(
+                        type=ActivityTypes.message,
+                        attachments=[
+                            Attachment(
+                                content_type="application/vnd.microsoft.card.adaptive",
+                                content=menu_card,
+                            )
+                        ],
+                    )
+                )
+            except Exception as e:
+                logger.warning("Failed to send prompt menu on install", error=str(e))
         elif action == "remove":
             logger.info(
                 "Bot uninstalled",
@@ -1472,6 +1504,10 @@ def build_legal_intake_card(
 
 def build_legal_prompt_menu_card() -> dict:
     """Teams 채팅용 프롬프트 메뉴 카드"""
+    request_tab_url = (
+        "https://teams.microsoft.com/l/entity/"
+        "77a6e06c-9d85-428b-ad30-035b9c698eb4/requester-dashboard"
+    )
     return {
         "type": "AdaptiveCard",
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -1552,6 +1588,11 @@ def build_legal_prompt_menu_card() -> dict:
                     "request_type": "기타(추가 정보 요청 예정)",
                     "subject": "기타(추가 정보 요청 예정)",
                 },
+            },
+            {
+                "type": "Action.OpenUrl",
+                "title": "내 요청함 바로가기",
+                "url": request_tab_url,
             },
         ],
     }
