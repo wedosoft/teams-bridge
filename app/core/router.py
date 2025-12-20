@@ -10,9 +10,11 @@
 - 첨부파일 양방향 전송
 """
 import asyncio
+import random
 import re
 from typing import Any, Optional
 
+import httpx
 from botbuilder.core import TurnContext
 from botbuilder.schema import Activity, ActivityTypes, Attachment as BotAttachment
 
@@ -95,7 +97,7 @@ class MessageRouter:
             teams_conversation_id=teams_conversation_id,
             teams_tenant_id=teams_tenant_id,
             has_text=bool(message.text),
-            attachment_count=len(message.attachments),
+            attachment_count=len(message.attachments or []),
         )
 
         # 1. 테넌트 설정 조회
@@ -115,24 +117,10 @@ class MessageRouter:
             await self._send_setup_required_message(context)
             return
 
-        # Freshdesk(법무 POC): 인테이크 카드 요청 커맨드 처리
+        # Freshdesk(법무 POC) 분기 처리
         if tenant.platform == Platform.FRESHDESK:
-            text = (message.text or "").strip()
-            if text in {"검토요청", "검토 요청", "legal", "/legal", "new", "/new"}:
-                from app.teams.bot import build_legal_intake_card
-
-                card = build_legal_intake_card()
-                await context.send_activity(
-                    Activity(
-                        type=ActivityTypes.message,
-                        attachments=[
-                            BotAttachment(
-                                content_type="application/vnd.microsoft.card.adaptive",
-                                content=card,
-                            )
-                        ],
-                    )
-                )
+            handled = await self._handle_freshdesk_commands(context, message, tenant)
+            if handled:
                 return
 
         # 3. 플랫폼 클라이언트 가져오기
@@ -147,89 +135,17 @@ class MessageRouter:
             return
 
         try:
-            # Freshdesk(법무 POC): 기존 티켓을 현재 Teams 대화에 연결
-            # - Freshdesk에서 생성된 티켓(또는 기존 티켓)이라도 webhook 알림을 받으려면
-            #   ticket_id -> Teams conversation_reference 매핑이 필요하다.
+            # Freshdesk(법무 POC): 기존 티켓 연결 및 인테이크 카드 흐름
             if tenant.platform == Platform.FRESHDESK:
-                text = (message.text or "").strip()
-                m = re.match(r"^(?:/)?(?:link|구독|연결)\s*#?(\d+)\s*$", text, flags=re.IGNORECASE)
-                if m:
-                    ticket_id = m.group(1)
-
-                    view_ticket_fn = getattr(client, "view_ticket", None)
-                    if not callable(view_ticket_fn):
-                        await context.send_activity("이 테넌트의 Freshdesk 클라이언트가 티켓 조회를 지원하지 않습니다.")
-                        return
-
-                    ticket = await view_ticket_fn(ticket_id=ticket_id, include_requester=True)
-                    if not ticket:
-                        await context.send_activity(f"티켓 #{ticket_id}를 찾을 수 없습니다. 번호를 확인해 주세요.")
-                        return
-
-                    requester = ticket.get("requester") if isinstance(ticket.get("requester"), dict) else {}
-                    requester_email = (requester.get("email") or "").strip().lower()
-                    user_email = ((message.user.email if message.user else None) or "").strip().lower()
-
-                    # 가능한 경우 소유권 최소 검증(POC)
-                    if requester_email and user_email and requester_email != user_email:
-                        await context.send_activity(
-                            f"티켓 #{ticket_id}의 요청자 이메일({requester_email})이 현재 사용자({user_email})와 달라 연결할 수 없습니다."
-                        )
-                        return
-
-                    mapping = ConversationMapping(
-                        teams_conversation_id=teams_conversation_id,
-                        teams_user_id=(message.user.id if message.user else ""),
-                        conversation_reference=conversation_reference,
-                        platform=tenant.platform.value,
-                        platform_conversation_id=str(ticket.get("id") or ticket_id),
-                        platform_conversation_numeric_id=str(ticket.get("id") or ticket_id),
-                        platform_user_id=requester_email or user_email or None,
-                        is_resolved=False,
-                        greeting_sent=True,
-                        tenant_id=tenant.id,
-                    )
-                    await self.store.upsert(mapping)
-
-                    await context.send_activity(
-                        f"티켓 #{ticket_id}를 이 채팅에 연결했습니다. 이제 Freshdesk 공개 메모/업데이트가 이 대화로 전송됩니다."
-                    )
+                handled = await self._handle_freshdesk_link_or_intake(
+                    context=context,
+                    message=message,
+                    tenant=tenant,
+                    client=client,
+                    conversation_reference=conversation_reference,
+                )
+                if handled:
                     return
-
-                # Freshdesk(법무 POC): 첫 메시지는 폼(Adaptive Card)로 접수하는 흐름을 기본으로 한다.
-                # - 사용자가 아무 텍스트를 보내도 바로 티켓을 만드는 대신, 폼을 보여준다.
-                # - 이미 매핑이 있으면(기존 티켓 연결 상태) 일반 메시지 전송 경로를 탄다.
-                if not (getattr(message, "metadata", None) and message.metadata.get("force_new_conversation")):
-                    existing = await self.store.get_by_teams_id(
-                        teams_conversation_id, tenant.platform.value
-                    )
-                    if not existing or existing.is_resolved:
-                        from app.teams.bot import build_legal_intake_card
-
-                        raw = (message.text or "").strip()
-                        subject_guess = ""
-                        desc_guess = ""
-                        if raw:
-                            first_line = raw.splitlines()[0].strip()
-                            subject_guess = first_line[:120]
-                            desc_guess = raw
-
-                        card = build_legal_intake_card(
-                            subject_value=subject_guess,
-                            description_value=desc_guess,
-                        )
-                        await context.send_activity(
-                            Activity(
-                                type=ActivityTypes.message,
-                                attachments=[
-                                    BotAttachment(
-                                        content_type="application/vnd.microsoft.card.adaptive",
-                                        content=card,
-                                    )
-                                ],
-                            )
-                        )
-                        return
 
             # 4. 기존 대화 매핑 확인
             force_new = bool(getattr(message, "metadata", None) and message.metadata.get("force_new_conversation"))
@@ -293,31 +209,16 @@ class MessageRouter:
                 )
 
                 if not success:
-                    # 전송 실패 → 새 대화 생성
-                    logger.info("Message send failed, creating new conversation")
-                    await self.store.mark_resolved(
-                        mapping.platform_conversation_id or "",
-                        tenant.platform.value,
-                        True,
+                    # 전송 실패 → 즉시 재시도/새 티켓 생성은 하지 않음 (중복 티켓 방지)
+                    logger.warning(
+                        "Message send failed, keeping existing conversation",
+                        teams_conversation_id=teams_conversation_id,
+                        platform=tenant.platform.value,
                     )
-
-                    mapping = await self._create_new_conversation(
-                        context=context,
-                        message=message,
-                        tenant=tenant,
-                        client=client,
-                        conversation_reference=conversation_reference,
-                    )
-
-                    if not mapping:
-                        await context.send_activity(
-                            "죄송합니다. 상담 연결에 실패했습니다."
-                        )
-                        return
-
                     await context.send_activity(
-                        "이전 상담이 종료되어 새로운 상담이 시작되었습니다. 🙂"
+                        "메시지 전송에 실패했습니다. 잠시 후 다시 시도해 주세요."
                     )
+                    return
 
             # ConversationReference 업데이트
             if conversation_reference:
@@ -453,8 +354,9 @@ class MessageRouter:
             context, message.attachments or [], client
         )
 
-        # 메시지 전송
-        return await client.send_message(
+        # 메시지 전송 (재시도 포함)
+        return await self._send_with_retries(
+            client=client,
             conversation_id=conversation_id,
             user_id=user_id,
             message_text=message.text,
@@ -538,11 +440,23 @@ class MessageRouter:
         self, mapping: ConversationMapping, tenant: TenantConfig
     ) -> None:
         """대화 종료 처리"""
-        await self.store.mark_resolved(
-            mapping.platform_conversation_id or "",
-            tenant.platform.value,
-            True,
+        conversation_id = (
+            mapping.platform_conversation_id
+            or mapping.platform_conversation_numeric_id
+            or ""
         )
+        if not conversation_id:
+            logger.warning(
+                "Resolve skipped due to missing conversation id",
+                teams_conversation_id=mapping.teams_conversation_id,
+                platform=tenant.platform.value,
+            )
+        else:
+            await self.store.mark_resolved(
+                conversation_id,
+                tenant.platform.value,
+                True,
+            )
 
         if mapping.conversation_reference:
             await self.bot.send_proactive_message(
@@ -636,12 +550,12 @@ class MessageRouter:
 
         # 비디오 링크 추가
         for att in video_attachments:
-            display_name = att.name or "video"
+            display_name = self._escape_markdown_link_text(att.name or "video")
             message_parts.append(f"🎬 [{display_name}]({att.url})")
 
         # 파일 링크 추가
         for att in file_attachments:
-            display_name = att.name or "file"
+            display_name = self._escape_markdown_link_text(att.name or "file")
             message_parts.append(f"📎 [{display_name}]({att.url})")
 
         combined_text = "\n\n".join(message_parts) if message_parts else None
@@ -651,7 +565,8 @@ class MessageRouter:
         if image_attachments:
             # Adaptive Card body에 이미지들 추가
             card_body = []
-            for att in image_attachments:
+            max_images = 4
+            for att in image_attachments[:max_images]:
                 card_body.append({
                     "type": "Image",
                     "url": att.url,
@@ -662,6 +577,16 @@ class MessageRouter:
                         "url": att.url,
                     },
                 })
+
+            if len(image_attachments) > max_images:
+                remaining = len(image_attachments) - max_images
+                card_body.append({
+                    "type": "TextBlock",
+                    "text": f"이미지 {remaining}개 더 있음 (링크로 확인)"
+                })
+                for att in image_attachments[max_images:]:
+                    display_name = self._escape_markdown_link_text(att.name or "image")
+                    message_parts.append(f"🖼️ [{display_name}]({att.url})")
 
             adaptive_card = {
                 "type": "AdaptiveCard",
@@ -818,7 +743,27 @@ class MessageRouter:
                 content_type=content_type,
             )
 
-            public_url, uploaded = await asyncio.gather(supabase_task, freshchat_task)
+            public_url, uploaded = await asyncio.gather(
+                supabase_task,
+                freshchat_task,
+                return_exceptions=True,
+            )
+
+            if isinstance(uploaded, Exception):
+                logger.warning(
+                    "Helpdesk upload failed",
+                    filename=filename,
+                    error=str(uploaded),
+                )
+                uploaded = None
+
+            if isinstance(public_url, Exception):
+                logger.warning(
+                    "Supabase upload failed",
+                    filename=filename,
+                    error=str(public_url),
+                )
+                public_url = None
 
             if uploaded:
                 if public_url:
@@ -832,12 +777,20 @@ class MessageRouter:
             return None
         else:
             # 비-이미지는 Freshchat만 업로드
-            uploaded = await client.upload_file(
-                file_buffer=file_buffer,
-                filename=filename,
-                content_type=content_type,
-            )
-            return uploaded
+            try:
+                uploaded = await client.upload_file(
+                    file_buffer=file_buffer,
+                    filename=filename,
+                    content_type=content_type,
+                )
+                return uploaded
+            except Exception as e:
+                logger.warning(
+                    "Helpdesk upload failed",
+                    filename=filename,
+                    error=str(e),
+                )
+                return None
 
     async def _process_attachments_parallel(
         self,
@@ -859,10 +812,204 @@ class MessageRouter:
             for att in attachments
         ]
 
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # None 제외하고 반환
-        return [r for r in results if r is not None]
+        filtered = []
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("Attachment processing failed", error=str(r))
+                continue
+            if r is not None:
+                filtered.append(r)
+
+        return filtered
+
+    def _escape_markdown_link_text(self, text: str) -> str:
+        """Markdown 링크 텍스트 안전 처리"""
+        if not text:
+            return ""
+        return (
+            text.replace("[", "(")
+            .replace("]", ")")
+            .replace("(", "{")
+            .replace(")", "}")
+        )
+
+    # ===== Freshdesk POC 분리 =====
+
+    async def _handle_freshdesk_commands(
+        self,
+        context: TurnContext,
+        message: TeamsMessage,
+        tenant: TenantConfig,
+    ) -> bool:
+        """Freshdesk POC 커맨드 처리 (인테이크 카드 요청 등)"""
+        if tenant.platform != Platform.FRESHDESK:
+            return False
+
+        text = (message.text or "").strip()
+        if text in {"검토요청", "검토 요청", "legal", "/legal", "new", "/new"}:
+            from app.teams.bot import build_legal_intake_card
+
+            card = build_legal_intake_card()
+            await context.send_activity(
+                Activity(
+                    type=ActivityTypes.message,
+                    attachments=[
+                        BotAttachment(
+                            content_type="application/vnd.microsoft.card.adaptive",
+                            content=card,
+                        )
+                    ],
+                )
+            )
+            return True
+
+        return False
+
+    async def _handle_freshdesk_link_or_intake(
+        self,
+        context: TurnContext,
+        message: TeamsMessage,
+        tenant: TenantConfig,
+        client: HelpdeskClient,
+        conversation_reference: dict,
+    ) -> bool:
+        """Freshdesk POC: 기존 티켓 연결 및 인테이크 카드"""
+        text = (message.text or "").strip()
+        m = re.match(r"^(?:/)?(?:link|구독|연결)\s*#?(\d+)\s*$", text, flags=re.IGNORECASE)
+        if m:
+            ticket_id = m.group(1)
+
+            view_ticket_fn = getattr(client, "view_ticket", None)
+            if not callable(view_ticket_fn):
+                await context.send_activity("이 테넌트의 Freshdesk 클라이언트가 티켓 조회를 지원하지 않습니다.")
+                return True
+
+            ticket = await view_ticket_fn(ticket_id=ticket_id, include_requester=True)
+            if not ticket:
+                await context.send_activity(f"티켓 #{ticket_id}를 찾을 수 없습니다. 번호를 확인해 주세요.")
+                return True
+
+            requester = ticket.get("requester") if isinstance(ticket.get("requester"), dict) else {}
+            requester_email = (requester.get("email") or "").strip().lower()
+            user_email = ((message.user.email if message.user else None) or "").strip().lower()
+
+            # 가능한 경우 소유권 최소 검증(POC)
+            if requester_email and user_email and requester_email != user_email:
+                await context.send_activity(
+                    f"티켓 #{ticket_id}의 요청자 이메일({requester_email})이 현재 사용자({user_email})와 달라 연결할 수 없습니다."
+                )
+                return True
+
+            mapping = ConversationMapping(
+                teams_conversation_id=message.conversation_id,
+                teams_user_id=(message.user.id if message.user else ""),
+                conversation_reference=conversation_reference,
+                platform=tenant.platform.value,
+                platform_conversation_id=str(ticket.get("id") or ticket_id),
+                platform_conversation_numeric_id=str(ticket.get("id") or ticket_id),
+                platform_user_id=requester_email or user_email or None,
+                is_resolved=False,
+                greeting_sent=True,
+                tenant_id=tenant.id,
+            )
+            await self.store.upsert(mapping)
+
+            await context.send_activity(
+                f"티켓 #{ticket_id}를 이 채팅에 연결했습니다. 이제 Freshdesk 공개 메모/업데이트가 이 대화로 전송됩니다."
+            )
+            return True
+
+        # Freshdesk(법무 POC): 첫 메시지는 폼(Adaptive Card)로 접수하는 흐름을 기본으로 한다.
+        # - 사용자가 아무 텍스트를 보내도 바로 티켓을 만드는 대신, 폼을 보여준다.
+        # - 이미 매핑이 있으면(기존 티켓 연결 상태) 일반 메시지 전송 경로를 탄다.
+        if not (getattr(message, "metadata", None) and message.metadata.get("force_new_conversation")):
+            existing = await self.store.get_by_teams_id(
+                message.conversation_id, tenant.platform.value
+            )
+            if not existing or existing.is_resolved:
+                from app.teams.bot import build_legal_intake_card
+
+                raw = (message.text or "").strip()
+                subject_guess = ""
+                desc_guess = ""
+                if raw:
+                    first_line = raw.splitlines()[0].strip()
+                    subject_guess = first_line[:120]
+                    desc_guess = raw
+
+                card = build_legal_intake_card(
+                    subject_value=subject_guess,
+                    description_value=desc_guess,
+                )
+                await context.send_activity(
+                    Activity(
+                        type=ActivityTypes.message,
+                        attachments=[
+                            BotAttachment(
+                                content_type="application/vnd.microsoft.card.adaptive",
+                                content=card,
+                            )
+                        ],
+                    )
+                )
+                return True
+
+        return False
+
+    # ===== 전송 재시도 정책 =====
+
+    def _is_transient_error(self, error: Exception) -> bool:
+        if isinstance(error, httpx.HTTPStatusError):
+            status = error.response.status_code
+            return status == 429 or 500 <= status <= 599
+        if isinstance(error, httpx.TransportError):
+            return True
+        return False
+
+    async def _send_with_retries(
+        self,
+        client: HelpdeskClient,
+        conversation_id: str,
+        user_id: str,
+        message_text: Optional[str],
+        attachments: Optional[list[dict]],
+        metadata: Optional[dict],
+    ) -> bool:
+        max_attempts = 3
+        base_delay = 0.5
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await client.send_message(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    message_text=message_text,
+                    attachments=attachments if attachments else None,
+                    metadata=metadata,
+                )
+            except Exception as e:
+                if attempt == max_attempts or not self._is_transient_error(e):
+                    logger.warning(
+                        "Send message failed",
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        error=str(e),
+                    )
+                    return False
+
+                # 짧은 지수 백오프 + 지터
+                delay = base_delay * (2 ** (attempt - 1))
+                delay = delay + random.uniform(0, 0.2)
+                logger.info(
+                    "Retrying send message",
+                    attempt=attempt,
+                    next_delay=round(delay, 3),
+                )
+                await asyncio.sleep(delay)
+
+        return False
 
 
 # ===== 싱글톤 =====
