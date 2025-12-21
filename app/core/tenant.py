@@ -353,7 +353,6 @@ class TenantService:
             config.freshdesk = FreshdeskConfig(
                 base_url=platform_config.get("base_url", ""),
                 api_key=platform_config.get("api_key", ""),
-                weight_field_key=platform_config.get("weight_field_key", ""),
             )
 
         return config

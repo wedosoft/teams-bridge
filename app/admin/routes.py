@@ -588,7 +588,7 @@ async def freshdesk_dashboard(
         responder_id = t.get("responder_id") or "unassigned"
         bucket = summary["by_responder"].setdefault(
             str(responder_id),
-            {"responder_id": responder_id, "open": 0, "done": 0, "weight_open": 0, "weight_done": 0},
+            {"responder_id": responder_id, "open": 0, "done": 0},
         )
 
         if done:
