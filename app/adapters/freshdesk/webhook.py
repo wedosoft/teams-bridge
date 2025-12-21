@@ -16,6 +16,7 @@ POC에서는 아래 두 형태를 모두 허용하도록 느슨하게 파싱합�
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from app.adapters.freshchat.webhook import ParsedMessage, WebhookEvent
@@ -62,14 +63,19 @@ class FreshdeskWebhookHandler:
                 raw_data=payload,
             )
 
-        # 메시지 텍스트 추출 (최신 conversation의 body_text)
+        # 메시지 텍스트 추출
         text = None
         
-        # 메시지 텍스트 추출 (최신 conversation의 body_text)
-        text = None
-        
-        # 공식 문서: payload.conversations[*].body_text
-        if isinstance(payload.get("conversations"), list):
+        # 1. body_text (Plain Text 우선)
+        if payload.get("body_text"):
+            text = payload.get("body_text")
+            
+        # 2. description_text (Plain Text 우선)
+        elif payload.get("description_text"):
+            text = payload.get("description_text")
+
+        # 3. 공식 문서: payload.conversations[*].body_text
+        elif isinstance(payload.get("conversations"), list):
             # 최신 대화(노트)를 찾기 위해 역순 순회
             # 주의: Freshdesk 웹훅에서 conversations 순서가 보장되지 않을 수 있으므로
             # id나 created_at으로 정렬하는 것이 안전하지만, POC에서는 리스트의 마지막이 최신이라고 가정
@@ -85,6 +91,10 @@ class FreshdeskWebhookHandler:
                 if isinstance(item, dict) and item.get("body_text"):
                     text = item.get("body_text")
                     break
+        
+        # 4. text (Fallback - HTML 가능성 있음)
+        elif payload.get("text"):
+            text = payload.get("text")
 
         actor_type = payload.get("actor_type") or payload.get("actorType") or "agent"
         actor_id = payload.get("actor_id") or payload.get("actorId")
