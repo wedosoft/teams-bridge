@@ -157,22 +157,23 @@
                     <!-- 기본값: Freshdesk -->
                     <div class="form-group">
                         <label>Freshdesk Base URL</label>
-                        <input type="text" name="freshdesk_base_url" placeholder="https://yourdomain.freshdesk.com" required>
+                        <input id="freshdesk-base-url" type="text" name="freshdesk_base_url" placeholder="https://yourdomain.freshdesk.com" required>
                     </div>
                     <div class="form-group">
                         <label>API Key</label>
-                        <input type="password" name="freshdesk_api_key" required>
+                        <input type="password" name="freshdesk_api_key" autocomplete="new-password">
+                        <div id="api-key-saved" class="help-text" style="display:none;">* API Key는 저장되어 있습니다. 변경이 필요할 때만 다시 입력하세요.</div>
                     </div>
                 </div>
 
                 <div class="form-group">
                     <label>Bot Name</label>
-                    <input type="text" name="bot_name" value="IT Helpdesk">
+                    <input id="bot-name" type="text" name="bot_name" value="">
                 </div>
 
                 <div class="form-group">
                     <label>Welcome Message</label>
-                    <textarea name="welcome_message" rows="3">안녕하세요! 법무 검토 요청을 도와드립니다.</textarea>
+                    <textarea id="welcome-message" name="welcome_message" rows="3"></textarea>
                 </div>
 
                 <button type="submit" class="btn">
@@ -198,6 +199,67 @@
                 window.location.href = '/api/admin/login';
             }
         });
+
+        // 저장된 설정을 다시 열었을 때, API key를 제외한 값을 폼에 프리필
+        async function prefillForm() {
+            try {
+                const res = await fetch('/api/admin/config', { credentials: 'include' });
+                if (!res.ok) return;
+                const data = await res.json();
+
+                if (data && data.is_configured) {
+                    const platformSelect = document.querySelector('select[name="platform"]');
+                    if (platformSelect && data.platform) {
+                        platformSelect.value = data.platform;
+                        // 플랫폼 필드 로드 후에 값 세팅
+                        await htmx.ajax('GET', `/api/admin/platform-fields?platform=${encodeURIComponent(data.platform)}`, {
+                            target: '#platform-fields',
+                            swap: 'innerHTML'
+                        });
+                    }
+
+                    const botNameEl = document.getElementById('bot-name');
+                    const welcomeEl = document.getElementById('welcome-message');
+                    if (botNameEl) botNameEl.value = data.bot_name || '';
+                    if (welcomeEl) welcomeEl.value = data.welcome_message || '';
+
+                    // Freshdesk prefill
+                    const freshdeskBaseUrlEl = document.querySelector('input[name="freshdesk_base_url"]');
+                    if (freshdeskBaseUrlEl && data.freshdesk_base_url) {
+                        freshdeskBaseUrlEl.value = data.freshdesk_base_url;
+                    }
+
+                    // Zendesk prefill
+                    const zendeskSubdomainEl = document.querySelector('input[name="zendesk_subdomain"]');
+                    if (zendeskSubdomainEl && data.zendesk_subdomain) zendeskSubdomainEl.value = data.zendesk_subdomain;
+                    const zendeskEmailEl = document.querySelector('input[name="zendesk_email"]');
+                    if (zendeskEmailEl && data.zendesk_email) zendeskEmailEl.value = data.zendesk_email;
+
+                    // Freshchat prefill
+                    const freshchatApiUrlEl = document.querySelector('input[name="freshchat_api_url"]');
+                    if (freshchatApiUrlEl && data.freshchat_api_url) freshchatApiUrlEl.value = data.freshchat_api_url;
+                    const freshchatInboxIdEl = document.querySelector('input[name="freshchat_inbox_id"]');
+                    if (freshchatInboxIdEl && data.freshchat_inbox_id) freshchatInboxIdEl.value = data.freshchat_inbox_id;
+
+                    // Credentials saved indicator (do not reveal value)
+                    const savedHint = document.getElementById('api-key-saved');
+                    if (savedHint) {
+                        savedHint.style.display = data.credentials_configured ? 'block' : 'none';
+                    }
+                } else {
+                    // 초기 상태: 기본값은 UI에 맡기되, 명시적으로 빈 값 유지
+                    const botNameEl = document.getElementById('bot-name');
+                    const welcomeEl = document.getElementById('welcome-message');
+                    if (botNameEl && !botNameEl.value) botNameEl.value = 'IT Helpdesk';
+                    if (welcomeEl && !welcomeEl.value) welcomeEl.value = '안녕하세요! IT 헬프데스크입니다. 무엇을 도와드릴까요?';
+                }
+            } catch (e) {
+                // 프리필 실패는 치명적이지 않음 (사용자는 수동 입력 가능)
+                console.warn('prefillForm failed:', e);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', prefillForm);
     </script>
 </body>
 </html>

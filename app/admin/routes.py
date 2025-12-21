@@ -73,6 +73,16 @@ class TenantResponse(BaseModel):
     is_configured: bool
     graph_consent_granted: bool = False  # Graph API 관리자 동의 여부
 
+    # Non-sensitive prefill fields (API key/token values are never returned)
+    freshdesk_base_url: Optional[str] = None
+    zendesk_subdomain: Optional[str] = None
+    zendesk_email: Optional[str] = None
+    freshchat_api_url: Optional[str] = None
+    freshchat_inbox_id: Optional[str] = None
+
+    # Whether credentials are stored (do not expose the secret itself)
+    credentials_configured: bool = False
+
 
 class WebhookInfo(BaseModel):
     """웹훅 URL 정보"""
@@ -143,11 +153,12 @@ async def get_tenant_config(
             webhook_url="",
             is_configured=False,
             graph_consent_granted=graph_consent,
+            credentials_configured=False,
         )
 
     webhook_url = f"{base_url}/api/webhook/{tenant.platform.value}/{tenant_id}"
 
-    return TenantResponse(
+    response = TenantResponse(
         teams_tenant_id=tenant_id,
         platform=tenant.platform.value,
         bot_name=tenant.bot_name,
@@ -156,6 +167,21 @@ async def get_tenant_config(
         is_configured=True,
         graph_consent_granted=graph_consent,
     )
+
+    # platform-specific safe fields
+    if tenant.platform == Platform.FRESHDESK and tenant.freshdesk:
+        response.freshdesk_base_url = tenant.freshdesk.base_url
+        response.credentials_configured = bool(tenant.freshdesk.api_key)
+    elif tenant.platform == Platform.ZENDESK and tenant.zendesk:
+        response.zendesk_subdomain = tenant.zendesk.subdomain
+        response.zendesk_email = tenant.zendesk.email
+        response.credentials_configured = bool(tenant.zendesk.api_token or tenant.zendesk.oauth_token)
+    elif tenant.platform == Platform.FRESHCHAT and tenant.freshchat:
+        response.freshchat_api_url = tenant.freshchat.api_url
+        response.freshchat_inbox_id = tenant.freshchat.inbox_id
+        response.credentials_configured = bool(tenant.freshchat.api_key)
+
+    return response
 
 
 @router.get("/tenant-info", response_class=HTMLResponse)

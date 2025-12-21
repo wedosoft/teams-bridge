@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     """애플리케이션 설정"""
 
     model_config = SettingsConfigDict(
-        env_file=(".env", ".env.local"),
+        env_file=(".env.local",),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -53,6 +53,14 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "info"
+
+    # Requester dashboard (PoC)
+    # If requesters and agents share the same email, override requester identity with a fixed email.
+    # MUST be set when requester dashboard endpoints are used.
+    requester_email_override: str = Field(
+        default="",
+        validation_alias="REQUESTER_EMAIL_OVERRIDE",
+    )
 
 
 @lru_cache

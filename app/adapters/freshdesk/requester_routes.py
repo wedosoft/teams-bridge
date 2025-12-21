@@ -22,6 +22,7 @@ from typing import Union
 
 from app.core.tenant import Platform, get_tenant_service
 from app.core.platform_factory import get_platform_factory
+from app.config import get_settings
 from app.utils.logger import get_logger
 
 router = APIRouter()
@@ -30,14 +31,17 @@ logger = get_logger(__name__)
 
 async def get_request_context(
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
-    x_requester_email: Optional[str] = Header(None, alias="X-Requester-Email"),
 ) -> tuple[str, str]:
     if not x_tenant_id:
         raise HTTPException(status_code=401, detail="Missing X-Tenant-ID")
-    if not x_requester_email:
-        raise HTTPException(status_code=401, detail="Missing X-Requester-Email")
-    # POC 임시 고정: "내 요청함"은 고정 요청자 기준으로 검색
-    return (x_tenant_id, "requestor@wedosoft.net")
+    settings = get_settings()
+    requester_email = (settings.requester_email_override or "").strip()
+    if not requester_email:
+        raise HTTPException(
+            status_code=500,
+            detail="REQUESTER_EMAIL_OVERRIDE is required for requester dashboard",
+        )
+    return (x_tenant_id, requester_email)
 
 
 def _is_done(status_value) -> bool:
