@@ -119,13 +119,22 @@ async def list_my_requests(
         except Exception:
             priority_code = None
 
+        responder_id = t.get("responder_id")
+        responder_name = None
+        if responder_id is not None:
+            try:
+                responder_name = await client.get_agent_name(str(responder_id))
+            except Exception:
+                responder_name = None
+
         items.append(
             {
                 "id": t.get("id"),
                 "subject": t.get("subject"),
                 "status": status_map.get(status_code, status_value),
                 "priority": priority_map.get(priority_code, priority_value),
-                "responder_id": t.get("responder_id"),
+                "responder_id": responder_id,
+                "responder_name": responder_name,
                 "created_at": t.get("created_at"),
                 "updated_at": t.get("updated_at"),
                 "is_done": _is_done(t.get("status")),
@@ -198,6 +207,9 @@ async def get_request_detail(
         "status": status_map.get(status_code, status_value),
         "priority": priority_map.get(priority_code, priority_value),
         "responder_id": ticket.get("responder_id"),
+        "responder_name": await client.get_agent_name(str(ticket.get("responder_id")))
+        if ticket.get("responder_id") is not None
+        else None,
         "cc_emails": ticket.get("cc_emails") or [],
         "custom_fields": ticket.get("custom_fields") or {},
         "created_at": ticket.get("created_at"),

@@ -894,6 +894,34 @@ class MessageRouter:
             return False
 
         text = (message.text or "").strip()
+        quick_map = {
+            "계약서 검토(표준)": ("계약서", "계약서 검토(표준)"),
+            "NDA/비밀유지": ("NDA", "NDA/비밀유지"),
+            "거래처 조건 협의/특약 검토": ("기타", "거래처 조건 협의/특약 검토"),
+            "개인정보/보안 이슈": ("개인정보", "개인정보/보안 이슈"),
+            "공정거래/컴플라이언스 문의": ("컴플라이언스", "공정거래/컴플라이언스 문의"),
+            "기타(추가 정보 요청 예정)": ("기타", "기타(추가 정보 요청 예정)"),
+        }
+        if text in quick_map:
+            request_type, subject = quick_map[text]
+            from app.teams.bot import build_legal_intake_card
+
+            card = build_legal_intake_card(
+                subject_value=subject,
+                request_type_value=request_type,
+            )
+            await context.send_activity(
+                Activity(
+                    type=ActivityTypes.message,
+                    attachments=[
+                        BotAttachment(
+                            content_type="application/vnd.microsoft.card.adaptive",
+                            content=card,
+                        )
+                    ],
+                )
+            )
+            return True
         if text in {"내 요청함", "/내요청함", "/requests", "requests"}:
             await context.send_activity(
                 "진행상황 확인과 추가 문의는 '내 요청함' 탭에서 확인해 주세요."
