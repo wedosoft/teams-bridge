@@ -43,11 +43,9 @@ class FreshdeskClient:
         self,
         base_url: str,
         api_key: str,
-        weight_field_key: str = "",
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self.weight_field_key = weight_field_key
 
         self.api_url = f"{self.base_url}/api/v2"
         self._agent_cache: dict[str, CachedAgent] = {}
@@ -322,11 +320,11 @@ class FreshdeskClient:
 
         # Custom fields (가중치 등)
         custom_fields: dict[str, Any] = {}
-        weight = (metadata or {}).get("weight")
-        if weight is not None:
-            if not self.weight_field_key:
-                raise ValueError("Freshdesk weight_field_key not configured for this tenant")
-            custom_fields[self.weight_field_key] = int(weight)
+        # weight = (metadata or {}).get("weight")
+        # if weight is not None:
+        #     if not self.weight_field_key:
+        #         raise ValueError("Freshdesk weight_field_key not configured for this tenant")
+        #     custom_fields[self.weight_field_key] = int(weight)
 
         payload: dict[str, Any] = {
             "subject": subject,

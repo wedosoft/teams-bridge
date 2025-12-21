@@ -57,11 +57,9 @@ class FreshdeskConfig:
 
     Notes:
       - base_url 예: https://{domain}.freshdesk.com
-      - weight_field_key 예: cf_weight
     """
     base_url: str
     api_key: str
-    weight_field_key: str = ""
 
 
 @dataclass

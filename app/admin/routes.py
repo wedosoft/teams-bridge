@@ -48,7 +48,6 @@ class FreshdeskSetup(BaseModel):
     """Freshdesk 설정 (Freshdesk Omni 포함)"""
     base_url: str = Field(..., description="Freshdesk Base URL (예: https://yourdomain.freshdesk.com)")
     api_key: str = Field(..., description="Freshdesk API Key")
-    weight_field_key: str = Field(default="", description="가중치 커스텀 필드 키 (예: cf_weight)")
 
 
 class TenantSetupRequest(BaseModel):
@@ -333,7 +332,6 @@ async def save_tenant_config(
         platform_config = {
             "base_url": setup_request.freshdesk.base_url,
             "api_key": setup_request.freshdesk.api_key,
-            "weight_field_key": setup_request.freshdesk.weight_field_key,
         }
 
     # 4. Save Tenant
@@ -577,19 +575,9 @@ async def freshdesk_dashboard(
 
     tickets = await list_tickets_fn(per_page=per_page)
 
-    weight_field_key = tenant.freshdesk.weight_field_key if tenant.freshdesk else ""
-
-    def is_done(status_value) -> bool:
-        if isinstance(status_value, int):
-            return status_value in {4, 5}
-        if isinstance(status_value, str):
-            return status_value.lower() in {"resolved", "closed"}
-        return False
-
     summary = {
         "total": {"all": 0, "open": 0, "done": 0},
         "by_responder": {},
-        "weight_field_key": weight_field_key,
     }
 
     for t in tickets:
@@ -612,18 +600,6 @@ async def freshdesk_dashboard(
             bucket["done"] += 1
         else:
             bucket["open"] += 1
-
-        if weight_field_key:
-            cf = t.get("custom_fields") if isinstance(t.get("custom_fields"), dict) else {}
-            raw_weight = cf.get(weight_field_key)
-            try:
-                weight = int(raw_weight) if raw_weight is not None and str(raw_weight).strip() else 0
-            except Exception:
-                weight = 0
-            if done:
-                bucket["weight_done"] += weight
-            else:
-                bucket["weight_open"] += weight
 
     # responder 이름 보강
     get_agent_name_fn = getattr(client, "get_agent_name", None)

@@ -190,7 +190,6 @@ class PlatformFactory:
         return FreshdeskClient(
             base_url=config.base_url,
             api_key=config.api_key,
-            weight_field_key=config.weight_field_key,
         )
 
     def _create_webhook_handler(self, tenant: TenantConfig) -> Optional[Any]:
