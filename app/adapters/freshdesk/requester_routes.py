@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Union
@@ -358,18 +358,23 @@ async def get_request_detail(
 async def add_inquiry(
     request: Request,
     ticket_id: str,
-    req: InquiryRequest = None,  # Optional for Form Data
+    body: Optional[str] = Form(None),
     ctx: tuple[str, str] = Depends(get_request_context),
 ) -> Union[dict, HTMLResponse]:
     teams_tenant_id, requester_email = ctx
 
-    # Handle Form Data for HTMX
-    body_text = ""
-    if request.headers.get("HX-Request"):
-        form = await request.form()
-        body_text = form.get("body", "")
-    elif req:
-        body_text = req.body
+    body_text = (body or "").strip()
+
+    # Optional JSON support (e.g., non-HTMX clients)
+    if not body_text:
+        content_type = (request.headers.get("content-type") or "").lower()
+        if content_type.startswith("application/json"):
+            try:
+                payload = await request.json()
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid JSON")
+            if isinstance(payload, dict):
+                body_text = (payload.get("body") or "").strip()
     
     body_text = (body_text or "").strip()
     if not body_text:
