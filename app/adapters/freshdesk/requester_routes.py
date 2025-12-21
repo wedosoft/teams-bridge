@@ -204,6 +204,10 @@ async def get_request_detail(
 
     responder_name = None
     if ticket.get("responder_id") is not None:
+        try:
+            responder_map = await client.get_agent_map()
+        except Exception:
+            responder_map = {}
         responder_name = responder_map.get(str(ticket.get("responder_id")))
 
     return {
