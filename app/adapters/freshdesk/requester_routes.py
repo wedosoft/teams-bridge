@@ -84,6 +84,17 @@ async def list_my_requests(
     if not client:
         raise HTTPException(status_code=500, detail="Failed to create Freshdesk client")
 
+    responder_map: dict[str, str] = {}
+    try:
+        # 에이전트 목록 캐시를 1회 로드
+        await client.get_agent_name_from_list("0")
+        responder_map = {
+            agent_id: cached.name
+            for agent_id, cached in getattr(client, "_agent_list_cache", {}).items()
+        }
+    except Exception:
+        responder_map = {}
+
     mappings = await client.get_ticket_field_mappings()
     status_map = mappings.get("status", {})
     priority_map = mappings.get("priority", {})
@@ -122,10 +133,7 @@ async def list_my_requests(
         responder_id = t.get("responder_id")
         responder_name = None
         if responder_id is not None:
-            try:
-                responder_name = await client.get_agent_name_with_fallback(str(responder_id))
-            except Exception:
-                responder_name = None
+            responder_name = responder_map.get(str(responder_id))
 
         items.append(
             {
@@ -200,6 +208,17 @@ async def get_request_detail(
     except Exception:
         priority_code = None
 
+    responder_name = None
+    if ticket.get("responder_id") is not None:
+        try:
+            await client.get_agent_name_from_list("0")
+            responder_name = getattr(client, "_agent_list_cache", {}).get(
+                str(ticket.get("responder_id"))
+            )
+            responder_name = responder_name.name if responder_name else None
+        except Exception:
+            responder_name = None
+
     return {
         "id": ticket.get("id"),
         "subject": ticket.get("subject"),
@@ -207,9 +226,7 @@ async def get_request_detail(
         "status": status_map.get(status_code, status_value),
         "priority": priority_map.get(priority_code, priority_value),
         "responder_id": ticket.get("responder_id"),
-        "responder_name": await client.get_agent_name_with_fallback(str(ticket.get("responder_id")))
-        if ticket.get("responder_id") is not None
-        else None,
+        "responder_name": responder_name,
         "cc_emails": ticket.get("cc_emails") or [],
         "custom_fields": ticket.get("custom_fields") or {},
         "created_at": ticket.get("created_at"),

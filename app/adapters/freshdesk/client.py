@@ -395,36 +395,40 @@ class FreshdeskClient:
         return name
 
     async def _refresh_agent_list_cache(self) -> None:
-        url = f"{self.api_url}/agents"
-        result = await self._request("GET", url)
-        if not isinstance(result, list):
-            return
+        """에이전트 전체 목록을 캐시 (페이지네이션 포함)"""
         now = time.time()
-        for agent in result:
-            if not isinstance(agent, dict):
-                continue
-            agent_id = agent.get("id")
-            name = agent.get("contact", {}).get("name") or agent.get("name")
-            if agent_id is None or not name:
-                continue
-            self._agent_list_cache[str(agent_id)] = CachedAgent(
-                name=name,
-                cached_at=now,
-            )
+        self._agent_list_cache = {}
+        page = 1
+        per_page = 100
+        while True:
+            url = f"{self.api_url}/agents"
+            result = await self._request("GET", url, params={"page": page, "per_page": per_page})
+            if not isinstance(result, list) or not result:
+                break
+            for agent in result:
+                if not isinstance(agent, dict):
+                    continue
+                agent_id = agent.get("id")
+                name = agent.get("contact", {}).get("name") or agent.get("name")
+                if agent_id is None or not name:
+                    continue
+                self._agent_list_cache[str(agent_id)] = CachedAgent(
+                    name=name,
+                    cached_at=now,
+                )
+            if len(result) < per_page:
+                break
+            page += 1
+
         self._agent_list_cache_expires_at = now + AGENT_LIST_CACHE_TTL_SECONDS
 
-    async def get_agent_name_with_fallback(self, agent_id: str) -> Optional[str]:
-        """Agent 이름 조회 (개별 조회 실패 시 목록 캐시로 fallback)"""
-        name = await self.get_agent_name(agent_id)
-        if name:
-            return name
-
+    async def get_agent_name_from_list(self, agent_id: str) -> Optional[str]:
+        """에이전트 목록 캐시에서 이름 조회 (없으면 목록 갱신)"""
         now = time.time()
         if not self._agent_list_cache or now >= self._agent_list_cache_expires_at:
             try:
                 await self._refresh_agent_list_cache()
             except Exception:
                 return None
-
         cached = self._agent_list_cache.get(agent_id)
         return cached.name if cached else None
