@@ -84,14 +84,8 @@ async def list_my_requests(
     if not client:
         raise HTTPException(status_code=500, detail="Failed to create Freshdesk client")
 
-    responder_map: dict[str, str] = {}
     try:
-        # 에이전트 목록 캐시를 1회 로드
-        await client.get_agent_name_from_list("0")
-        responder_map = {
-            agent_id: cached.name
-            for agent_id, cached in getattr(client, "_agent_list_cache", {}).items()
-        }
+        responder_map = await client.get_agent_map()
     except Exception:
         responder_map = {}
 
@@ -210,14 +204,7 @@ async def get_request_detail(
 
     responder_name = None
     if ticket.get("responder_id") is not None:
-        try:
-            await client.get_agent_name_from_list("0")
-            responder_name = getattr(client, "_agent_list_cache", {}).get(
-                str(ticket.get("responder_id"))
-            )
-            responder_name = responder_name.name if responder_name else None
-        except Exception:
-            responder_name = None
+        responder_name = responder_map.get(str(ticket.get("responder_id")))
 
     return {
         "id": ticket.get("id"),

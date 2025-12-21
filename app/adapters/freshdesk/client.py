@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 import httpx
 
+from app.utils.redis_cache import get_json, set_json
+
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -176,6 +178,19 @@ class FreshdeskClient:
         if self._field_cache and now < self._field_cache_expires_at:
             return self._field_cache
 
+        cache_key = f"freshdesk:{self.base_url}:field_map"
+        cached = await get_json(cache_key)
+        if isinstance(cached, dict):
+            status_map = cached.get("status") or {}
+            priority_map = cached.get("priority") or {}
+            if isinstance(status_map, dict) and isinstance(priority_map, dict):
+                self._field_cache = {
+                    "status": {int(k): v for k, v in status_map.items()},
+                    "priority": {int(k): v for k, v in priority_map.items()},
+                }
+                self._field_cache_expires_at = now + FIELD_CACHE_TTL_SECONDS
+                return self._field_cache
+
         url = f"{self.api_url}/ticket_fields"
         result = await self._request("GET", url)
         if not isinstance(result, list):
@@ -217,6 +232,14 @@ class FreshdeskClient:
             "priority": priority_map,
         }
         self._field_cache_expires_at = now + FIELD_CACHE_TTL_SECONDS
+        await set_json(
+            cache_key,
+            {
+                "status": {str(k): v for k, v in status_map.items()},
+                "priority": {str(k): v for k, v in priority_map.items()},
+            },
+            FIELD_CACHE_TTL_SECONDS,
+        )
         return self._field_cache
 
     async def add_public_inquiry_note(
@@ -422,13 +445,25 @@ class FreshdeskClient:
 
         self._agent_list_cache_expires_at = now + AGENT_LIST_CACHE_TTL_SECONDS
 
-    async def get_agent_name_from_list(self, agent_id: str) -> Optional[str]:
-        """에이전트 목록 캐시에서 이름 조회 (없으면 목록 갱신)"""
+    async def get_agent_map(self) -> dict[str, str]:
+        """에이전트 목록 캐시 반환 (없으면 목록 갱신)"""
         now = time.time()
         if not self._agent_list_cache or now >= self._agent_list_cache_expires_at:
-            try:
-                await self._refresh_agent_list_cache()
-            except Exception:
-                return None
-        cached = self._agent_list_cache.get(agent_id)
-        return cached.name if cached else None
+            cache_key = f"freshdesk:{self.base_url}:agent_map"
+            cached = await get_json(cache_key)
+            if isinstance(cached, dict):
+                self._agent_list_cache = {
+                    k: CachedAgent(name=v, cached_at=now) for k, v in cached.items()
+                }
+                self._agent_list_cache_expires_at = now + AGENT_LIST_CACHE_TTL_SECONDS
+            else:
+                try:
+                    await self._refresh_agent_list_cache()
+                    await set_json(
+                        cache_key,
+                        {k: v.name for k, v in self._agent_list_cache.items()},
+                        AGENT_LIST_CACHE_TTL_SECONDS,
+                    )
+                except Exception:
+                    return {}
+        return {agent_id: cached.name for agent_id, cached in self._agent_list_cache.items()}
