@@ -64,8 +64,24 @@ class FreshdeskWebhookHandler:
 
         # 메시지 텍스트 추출 (최신 conversation의 body_text)
         text = None
+        
+        # 메시지 텍스트 추출 (최신 conversation의 body_text)
+        text = None
+        
+        # 공식 문서: payload.conversations[*].body_text
         if isinstance(payload.get("conversations"), list):
-            for item in reversed(payload["conversations"]):
+            # 최신 대화(노트)를 찾기 위해 역순 순회
+            # 주의: Freshdesk 웹훅에서 conversations 순서가 보장되지 않을 수 있으므로
+            # id나 created_at으로 정렬하는 것이 안전하지만, POC에서는 리스트의 마지막이 최신이라고 가정
+            # (또는 body_text가 있는 마지막 항목)
+            
+            # 정렬: id가 있다면 id 기준 오름차순 정렬 후 마지막 항목 선택
+            conversations = sorted(
+                payload["conversations"], 
+                key=lambda x: x.get("id", 0) if isinstance(x, dict) else 0
+            )
+            
+            for item in reversed(conversations):
                 if isinstance(item, dict) and item.get("body_text"):
                     text = item.get("body_text")
                     break
