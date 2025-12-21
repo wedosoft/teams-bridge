@@ -442,13 +442,14 @@ class MessageRouter:
 
             # 메시지 이벤트
             if event.action == "message_create" and event.message:
-                # Freshdesk(법무 POC): 진행/업데이트는 "내 요청함"에서만 노출
+                # Freshdesk(법무 POC): 공개 메모(에이전트)만 Teams로 알림
                 if tenant.platform == Platform.FRESHDESK:
-                    logger.info(
-                        "Freshdesk message suppressed (request tab only)",
-                        conversation_id=conversation_id,
-                    )
-                    return
+                    if not self._is_freshdesk_public_agent_message(event):
+                        logger.info(
+                            "Freshdesk message suppressed (non-public or non-agent)",
+                            conversation_id=conversation_id,
+                        )
+                        return
                 await self._send_to_teams(event, mapping, tenant)
 
         except Exception as e:
@@ -550,6 +551,31 @@ class MessageRouter:
             teams_conversation_id=mapping.teams_conversation_id,
             actor_type=message.actor_type,
         )
+
+    def _is_freshdesk_public_agent_message(self, event: WebhookEvent) -> bool:
+        """Freshdesk 공개 메모(에이전트) 여부 판단"""
+        if not event.message:
+            return False
+        if event.message.actor_type != "agent":
+            return False
+
+        raw = event.raw_data or {}
+        note = raw.get("note") if isinstance(raw.get("note"), dict) else {}
+        private_flag = raw.get("private")
+        if isinstance(note, dict):
+            if private_flag is None:
+                private_flag = note.get("private")
+        if isinstance(private_flag, bool) and private_flag:
+            return False
+
+        incoming_flag = raw.get("incoming")
+        if isinstance(note, dict) and incoming_flag is None:
+            incoming_flag = note.get("incoming")
+        # incoming=true는 요청자 메시지로 취급 (알림 제외)
+        if isinstance(incoming_flag, bool) and incoming_flag:
+            return False
+
+        return True
 
     async def _send_combined_message_to_teams(
         self,
