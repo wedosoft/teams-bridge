@@ -194,5 +194,15 @@
             <!-- 웹훅 정보가 여기에 로드됨 -->
         </div>
     </div>
+
+    <script>
+        // 401 Unauthorized 발생 시 로그인 페이지로 이동
+        document.body.addEventListener('htmx:responseError', function(evt) {
+            if (evt.detail.xhr.status === 401) {
+                // 현재 페이지 URL을 redirect_url 파라미터로 전달 (선택 사항)
+                window.location.href = '/api/admin/login';
+            }
+        });
+    </script>
 </body>
 </html>

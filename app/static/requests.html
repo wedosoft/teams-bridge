@@ -46,7 +46,7 @@
     }
   </style>
 </head>
-<body hx-headers='{"X-Tenant-ID": localStorage.getItem("teams_tenant_id"), "X-Requester-Email": localStorage.getItem("user_email")}'>
+<body hx-headers=''>
   <div class="container">
     <div class="card list-card">
       <div class="row">
@@ -60,7 +60,7 @@
 
       <div id="list-error" class="error" style="display:none;"></div>
 
-      <div id="list-container" hx-get="/api/freshdesk/requests?page=1" hx-trigger="load">
+      <div id="list-container" hx-get="/api/freshdesk/requests?page=1">
           <div style="padding: 20px; text-align: center; color: #666;">불러오는 중...</div>
       </div>
       

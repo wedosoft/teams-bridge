@@ -85,14 +85,28 @@ class WebhookInfo(BaseModel):
 # ===== API Endpoints =====
 
 async def get_tenant_id_from_header(
+    request: Request,
     x_ms_token_aad_access_token: Optional[str] = Header(None, alias="X-MS-TOKEN-AAD-ACCESS-TOKEN"),
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),
 ) -> str:
-    """요청 헤더에서 테넌트 ID 추출
+    """요청 헤더 또는 쿠키에서 테넌트 ID 추출
 
-    Teams SSO 토큰 또는 X-Tenant-ID 헤더에서 추출
+    우선순위:
+    1. admin_session 쿠키 (관리자 포털)
+    2. X-Tenant-ID 헤더 (API 호출)
+    3. Teams SSO 토큰 (Teams 탭)
     """
-    # 개발 환경: X-Tenant-ID 헤더 직접 사용
+    # 1. 쿠키 세션 확인
+    session_id = request.cookies.get("admin_session")
+    if session_id:
+        from app.admin.oauth import admin_sessions
+        from datetime import datetime
+        
+        session = admin_sessions.get(session_id)
+        if session and session["expires_at"] > datetime.utcnow():
+            return session["tenant_id"]
+
+    # 2. 개발 환경/API: X-Tenant-ID 헤더 직접 사용
     if x_tenant_id:
         return x_tenant_id
 
@@ -102,7 +116,7 @@ async def get_tenant_id_from_header(
 
     raise HTTPException(
         status_code=401,
-        detail="Tenant ID not found. Provide X-Tenant-ID header.",
+        detail="Tenant ID not found. Please login or provide X-Tenant-ID header.",
     )
 
 
