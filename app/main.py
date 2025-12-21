@@ -99,6 +99,10 @@ app.include_router(freshdesk_requester_router, prefix=f"{API_PREFIX}/freshdesk",
 from app.admin.routes import router as admin_router
 app.include_router(admin_router, prefix=f"{API_PREFIX}/admin", tags=["Admin"])
 
+# Admin OAuth (로그인)
+from app.admin.oauth import router as admin_oauth_router
+app.include_router(admin_oauth_router, prefix=f"{API_PREFIX}/admin", tags=["Admin Auth"])
+
 # Admin OAuth (관리자 포털 인증)
 from app.admin.oauth import router as oauth_router
 app.include_router(oauth_router, prefix="/admin", tags=["Admin OAuth"])
